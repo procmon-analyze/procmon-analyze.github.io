@@ -14,6 +14,8 @@ const canvas = document.getElementById("canvas");
 canvas.width = window.innerWidth * 0.5;
 canvas.height = window.innerHeight - 16;
 
+const VIEWPORT_BUFFER = canvas.height;
+
 let headerMap = {
   "Time of Day": "time",
   "Process Name": "processName",
@@ -132,6 +134,7 @@ async function drawData(data) {
     }
 
     let track = null;
+    let mergedEntry = false;
 
     if (!totalTimeByOperation[operation]) {
       totalTimeByOperation[operation] = 0;
@@ -148,9 +151,14 @@ async function drawData(data) {
         } else if (path == lastTimeSlice.path) {
           lastTimeSlice.end = end;
           track = candidate;
+          mergedEntry = true;
           break;
         }
       }
+    }
+
+    if (mergedEntry) {
+      continue;
     }
 
     if (!track) {
@@ -209,20 +217,20 @@ function drawBackground() {
     pixelsPerSecond < 100000 ? 0.01 : 0.001;
 
   for (let i = 0; i < Math.ceil(totalTime / timelineScale); i++) {
-    let color = (i & 1) ? "#ffffff" : "#fafafa";
+    let color = (i & 1) ? "#ffffff" : "#efefef";
     renderer.pushRect(color,
                       0,
                       timelineScale * pixelsPerSecond * (i - scrollOffset / timelineScale),
                       canvas.width,
                       timelineScale * pixelsPerSecond,
-                      BACKGROUND_DEPTH);
+                      BACKGROUND_DEPTH - 0.05);
   }
 
   let lastOperation = null;
   for (let i = 0; i < tracks.length; i++) {
     let track = tracks[i];
     if (track.operation != lastOperation) {
-      let color = "#efefef";
+      let color = "#fafafa";
       renderer.pushRect(color,
                         i * trackWidth,
                         -canvas.height,
@@ -266,32 +274,13 @@ function drawForeground() {
 
   pixelsPerSecond *= scale;
 
-  let maxVisualStart = window.innerHeight * pixelsPerSecond + minTime;
+  let maxVisualStart = window.innerHeight * pixelsPerSecond;
 
   for (let i = 0; i < tracks.length; i++) {
     let track = tracks[i];
     let currentPixel = -1;
     let currentPixelFill = 0;
     for (let entry of track.entries) {
-      if ((entry.start - scrollOffset) > maxVisualStart ||
-          (entry.end - scrollOffset) < 0) {
-        break;
-      }
-
-      function maybePopLastPixel() {
-        if (currentPixel != -1 && currentPixelFill > 0.1) {
-          renderer.pushRect(entry.color,
-                            i * trackWidth,
-                            currentPixel,
-                            trackWidth,
-                            1,
-                            FOREGROUND_DEPTH,
-                            Math.min(1, currentPixelFill));
-          currentPixel = -1;
-          currentPixelFill = 0;
-        }
-      }
-
       let startRelative = entry.start - minTime - scrollOffset;
       let endRelative = entry.end - minTime - scrollOffset;
       let startPixels = startRelative * pixelsPerSecond;
@@ -300,6 +289,10 @@ function drawForeground() {
       let endPixel = Math.floor(endPixels);
       let durationPixels = endPixels - startPixels;
       if (true) {
+        if (endPixels < -VIEWPORT_BUFFER || startPixels > canvas.height + VIEWPORT_BUFFER) {
+          continue;
+        }
+
         renderer.pushRect(entry.color,
                           i * trackWidth,
                           startPixels,
@@ -307,6 +300,19 @@ function drawForeground() {
                           endPixels - startPixels,
                           FOREGROUND_DEPTH);
       } else {
+        function maybePopLastPixel() {
+          if (currentPixel != -1 && currentPixelFill > 0.1) {
+            renderer.pushRect(entry.color,
+                              i * trackWidth,
+                              currentPixel,
+                              trackWidth,
+                              1,
+                              FOREGROUND_DEPTH,
+                              Math.min(1, currentPixelFill));
+            currentPixel = -1;
+            currentPixelFill = 0;
+          }
+        }
         if (startPixel == endPixel) {
           if (startPixel != currentPixel) {
             maybePopLastPixel();
@@ -379,50 +385,84 @@ function translateTimeline() {
   }
 }
 
+function doScroll(dy) {
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    pixelsPerSecond,
+    scale,
+    scrollOffset,
+    tracks,
+    mouseX,
+    mouseY,
+  } = gState;
+
+  pixelsPerSecond *= scale;
+
+  let newScrollOffset = scrollOffset - dy / pixelsPerSecond;
+  gState.scrollOffset = Math.max(0, newScrollOffset);
+  gState.rendererScroll += dy;
+
+  renderer.translate(0, gState.rendererScroll);
+  renderer.draw();
+  translateTimeline();
+  scheduleRedraw();
+}
+
+function doZoom(scaleFactor) {
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    pixelsPerSecond,
+    scale,
+    scrollOffset,
+    tracks,
+    mouseX,
+    mouseY
+  } = gState;
+
+  pixelsPerSecond *= scale;
+
+  let windowTopInPixels = scrollOffset * pixelsPerSecond;
+  let windowCenterInPixels = windowTopInPixels + canvas.height / 2;
+  let mousePositionAbsolute = windowTopInPixels + mouseY;
+  let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
+  let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
+  let newScrollOffset = Math.max(0, newWindowTopInPixels / (pixelsPerSecond * scaleFactor));
+
+  gState.scale *= scaleFactor;
+  gState.rendererScale *= scaleFactor;
+  gState.scrollOffset = newScrollOffset;
+  gState.rendererScroll = (gState.rendererScale - 1) * (canvas.height / 2 - mouseY) / gState.rendererScale;
+
+  renderer.scale(1, gState.rendererScale);
+  renderer.translate(0, gState.rendererScroll);
+  renderer.draw();
+  translateTimeline();
+  scheduleRedraw();
+}
+
 function handleMouseMove(e) {
-  if (gState && gState.middleMouseDown) {
-    let {
-      trackWidth,
-      minTime,
-      maxTime,
-      pixelsPerSecond,
-      scale,
-      scrollOffset,
-      tracks,
-      mouseX,
-      mouseY,
-    } = gState;
+  if (!gState) {
+    return;
+  }
 
-    pixelsPerSecond *= scale;
+  let x = e.pageX;
+  let y = e.pageY;
+  gState.mouseX = x;
+  gState.mouseY = y;
 
-    let x = e.pageX;
-    let y = e.pageY;
-    let dx = e.movementX;
+  if (gState.middleMouseDown) {
     let dy = e.movementY;
-
-    gState.mouseX = x;
-    gState.mouseY = y;
-
-    let newScrollOffset = scrollOffset - dy / pixelsPerSecond;
-    gState.scrollOffset = Math.max(0, newScrollOffset);
-    gState.rendererScroll += dy;
-
-    renderer.translate(0, gState.rendererScroll);
-    renderer.draw();
-    translateTimeline();
-    scheduleRedraw();
-  } else if (gState) {
+    doScroll(dy);
+  } else {
     tooltip.textContent = "";
 
     let {trackWidth, minTime, maxTime, pixelsPerSecond, scale, tracks, scrollOffset} = gState;
 
     pixelsPerSecond *= scale;
-
-    let x = e.pageX;
-    let y = e.pageY;
-
-    gState.mouseX = x;
-    gState.mouseY = y;
 
     let trackIndex = Math.floor(x / trackWidth);
     if (trackIndex < tracks.length) {
@@ -472,11 +512,10 @@ function handleMouseMove(e) {
   }
 };
 
-
 let drawForegroundTimeout = null;
 function scheduleRedraw() {
   if (drawForegroundTimeout) {
-    clearTimeout(drawForegroundTimeout);
+    return;
   }
   drawForegroundTimeout = setTimeout(() => {
     gState.rendererScale = 1;
@@ -487,46 +526,19 @@ function scheduleRedraw() {
     drawBackground();
     drawForeground();
     renderer.draw();
+    drawForegroundTimeout = null;
   }, 250);
 }
 
 function handleMouseWheel(event) {
   if (gState) {
     event.preventDefault();
-
-    let {
-      trackWidth,
-      minTime,
-      maxTime,
-      pixelsPerSecond,
-      scale,
-      scrollOffset,
-      tracks,
-      mouseX,
-      mouseY
-    } = gState;
-
-    pixelsPerSecond *= scale;
-
-    let scaleFactor = 1 + event.deltaY * -0.05;
-
-    let windowTopInPixels = scrollOffset * pixelsPerSecond;
-    let windowCenterInPixels = windowTopInPixels + canvas.height / 2;
-    let mousePositionAbsolute = windowTopInPixels + mouseY;
-    let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
-    let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
-    let newScrollOffset = Math.max(0, newWindowTopInPixels / (pixelsPerSecond * scaleFactor));
-
-    gState.scale *= scaleFactor;
-    gState.rendererScale *= scaleFactor;
-    gState.scrollOffset = newScrollOffset;
-    gState.rendererScroll = (gState.rendererScale - 1) * (canvas.height / 2 - mouseY) / gState.rendererScale;
-
-    renderer.scale(1, gState.rendererScale);
-    renderer.translate(0, gState.rendererScroll);
-    renderer.draw();
-    translateTimeline();
-    scheduleRedraw();
+    if (event.ctrlKey) {
+      let scaleFactor = 1 + event.deltaY * -0.05;
+      doZoom(scaleFactor);
+    } else {
+      doScroll(-event.deltaY);
+    }
   }
 }
 
@@ -550,4 +562,4 @@ document.addEventListener("wheel", handleMouseWheel, {passive: false});
 document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 
-renderer.startup();
+readFileContents();

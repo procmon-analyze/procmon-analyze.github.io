@@ -98,6 +98,11 @@ function pushRect(cssColor, x, y, width, height, depth, fill = 1.0) {
     let oldArray = rectsObj.vertexArray;
     rectsObj.vertexArray = new Float32Array(oldArray.length * 2);
     rectsObj.vertexArray.set(oldArray);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, rectsObj.vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER,
+                  rectsObj.vertexArray,
+                  gl.STATIC_DRAW);
   }
 
   if (fill != 1.0) {
@@ -132,9 +137,10 @@ function translate(translateX, translateY) {
 
 function draw() {
   gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-  gl.clearColor(1.0, 1.0, 1.0, 1.0);
+  gl.clearColor(0.5, 0.5, 0.5, 1.0);
   gl.clearDepth(1.0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.disable(gl.CULL_FACE);
 
   gl.useProgram(shaderProgram);
 
@@ -159,6 +165,7 @@ function draw() {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     } else {
       gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LESS);
       gl.disable(gl.BLEND);
     }
 
@@ -167,24 +174,24 @@ function draw() {
         continue;
       }
       gl.uniform4fv(uGlobalColor, hexToColorArray(cssColor));
-
       gl.bindBuffer(gl.ARRAY_BUFFER, rectsObj.vertexBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER,
-                    rectsObj.vertexArray,
-                    gl.STATIC_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, rectsObj.vertexArray, gl.STATIC_DRAW);
 
       gl.enableVertexAttribArray(aVertexData);
       gl.vertexAttribPointer(aVertexData, VERTEX_NUM_COMPONENTS,
             gl.FLOAT, false, 0, 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, rectsObj.vertexCount);
+      console.log("drew arrays: ");
+      console.log(hexToColorArray(cssColor));
+      console.log(rectsObj);
     }
   }
 }
 
 function startup() {
   glCanvas = document.getElementById("canvas");
-  gl = glCanvas.getContext("webgl", { alpha: false });
+  gl = glCanvas.getContext("webgl");
 
   const shaderSet = [
     {
