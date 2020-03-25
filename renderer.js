@@ -18,6 +18,7 @@ let uGlobalColor;
 let aVertexData;
 
 let rectsByColor = {};
+let generationId = 1;
 
 window.addEventListener("load", startup, false);
 
@@ -80,12 +81,33 @@ function makeRectsObj() {
   return result;
 }
 
-function pushVertex(rectsObj, x, y, z, fill) {
-  let startIndex = rectsObj.vertexCount++;
+function setVertex(rectsObj, startIndex, x, y, z, fill) {
   rectsObj.vertexArray[startIndex * VERTEX_NUM_COMPONENTS + 0] = x;
   rectsObj.vertexArray[startIndex * VERTEX_NUM_COMPONENTS + 1] = y;
   rectsObj.vertexArray[startIndex * VERTEX_NUM_COMPONENTS + 2] = z;
   rectsObj.vertexArray[startIndex * VERTEX_NUM_COMPONENTS + 3] = fill;
+}
+
+function setVertexFill(rectsObj, startIndex, fill) {
+  rectsObj.vertexArray[startIndex * VERTEX_NUM_COMPONENTS + 3] = fill;
+}
+
+function maybeMutateRect(handle, fill) {
+  if (handle && handle.generationId == generationId) {
+    let rectsObj = rectsByColor[handle.cssColor];
+    if (fill != 1.0) {
+      rectsObj.hasAlpha = true;
+    }
+    setVertexFill(rectsObj, handle.startIndex + 0, fill);
+    setVertexFill(rectsObj, handle.startIndex + 1, fill);
+    setVertexFill(rectsObj, handle.startIndex + 2, fill);
+    setVertexFill(rectsObj, handle.startIndex + 3, fill);
+    setVertexFill(rectsObj, handle.startIndex + 4, fill);
+    setVertexFill(rectsObj, handle.startIndex + 5, fill);
+    return true;
+  } else {
+    return false;
+  }
 }
 
 function pushRect(cssColor, x, y, width, height, depth, fill = 1.0) {
@@ -109,15 +131,20 @@ function pushRect(cssColor, x, y, width, height, depth, fill = 1.0) {
     rectsObj.hasAlpha = true;
   }
 
-  pushVertex(rectsObj, x, y, depth, fill);
-  pushVertex(rectsObj, x, y + height, depth, fill);
-  pushVertex(rectsObj, x + width, y + height, depth, fill);
-  pushVertex(rectsObj, x, y, depth, fill);
-  pushVertex(rectsObj, x + width, y + height, depth, fill);
-  pushVertex(rectsObj, x + width, y, depth, fill);
+  let startIndex = rectsObj.vertexCount;
+  rectsObj.vertexCount += VERTICES_PER_RECT;
+  setVertex(rectsObj, startIndex + 0, x, y, depth, fill);
+  setVertex(rectsObj, startIndex + 1, x, y + height, depth, fill);
+  setVertex(rectsObj, startIndex + 2, x + width, y + height, depth, fill);
+  setVertex(rectsObj, startIndex + 3, x, y, depth, fill);
+  setVertex(rectsObj, startIndex + 4, x + width, y + height, depth, fill);
+  setVertex(rectsObj, startIndex + 5, x + width, y, depth, fill);
+
+  return {cssColor, startIndex, generationId};
 }
 
 function clearAll() {
+  generationId++;
   for (let [cssColor, rectsObj] of Object.entries(rectsByColor)) {
     rectsObj.vertexCount = 0;
     rectsObj.hasAlpha = false;
@@ -182,9 +209,6 @@ function draw() {
             gl.FLOAT, false, 0, 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, rectsObj.vertexCount);
-      console.log("drew arrays: ");
-      console.log(hexToColorArray(cssColor));
-      console.log(rectsObj);
     }
   }
 }
@@ -213,6 +237,7 @@ function startup() {
 export default {
   startup,
   pushRect,
+  maybeMutateRect,
   draw,
   scale,
   translate,

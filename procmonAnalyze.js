@@ -4,6 +4,7 @@ import renderer from "./renderer.js"
 const BACKGROUND_DEPTH = 0.9;
 const TRACK_GUTTER_DEPTH = 0.8;
 const FOREGROUND_DEPTH = 0.7;
+const HOVERED_ENTRY_FILL = 0.9;
 
 const csvInput = document.getElementById("csvfile");
 const tooltip = document.getElementById("tooltip");
@@ -172,7 +173,7 @@ async function drawData(data) {
       }
       opColors[operation] = colors.pop();
     }
-    let entry = {start, end, path, pid, detail, processName, color: opColors[operation]};
+    let entry = {start, end, path, pid, detail, processName, rectHandle: null, color: opColors[operation]};
     track.entries.push(entry);
   }
 
@@ -198,6 +199,7 @@ async function drawData(data) {
     mouseX: 0,
     mouseY: 0,
     timelineIndicators: [],
+    lastHoveredRect: null,
   };
 
   renderer.clearAll();
@@ -244,28 +246,20 @@ function drawBackground() {
   gState.timelineIndicators = [];
   timeline.textContent = "";
   let printSeconds = timelineScale == 1;
-  if (timelineScale == 1) {
-    for (let i = 0; i < Math.floor(totalTime); i++) {
-      let div = document.createElement("div");
-      div.style.position = "fixed";
-      div.style.left = `${canvas.width}px`;
-      let offset = (i - scrollOffset) * pixelsPerSecond;
-      div.style.top = `${offset}px`;
-      div.textContent = `${i}s`;
-      timeline.appendChild(div);
-      gState.timelineIndicators.push({div, offset});
+  for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
+    let offset = (i * timelineScale - scrollOffset) * pixelsPerSecond;
+    if (offset < -VIEWPORT_BUFFER || offset > canvas.height + VIEWPORT_BUFFER) {
+      continue;
     }
-  } else {
-    for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
-      let div = document.createElement("div");
-      div.style.position = "fixed";
-      div.style.left = `${canvas.width}px`;
-      let offset = (i * timelineScale - scrollOffset) * pixelsPerSecond;
-      div.style.top = `${offset}px`;
-      div.textContent = `${Math.round(i * timelineScale * 1000)}ms`;
-      timeline.appendChild(div);
-      gState.timelineIndicators.push({div, offset});
-    }
+
+    let div = document.createElement("div");
+    div.style.position = "fixed";
+    div.style.left = `${canvas.width}px`;
+    div.style.top = `${offset}px`;
+    div.textContent = timelineScale == 1 ? `${i}s` : `${Math.round(i * timelineScale * 1000)}ms`;
+
+    timeline.appendChild(div);
+    gState.timelineIndicators.push({div, offset});
   }
 }
 
@@ -293,12 +287,12 @@ function drawForeground() {
           continue;
         }
 
-        renderer.pushRect(entry.color,
-                          i * trackWidth,
-                          startPixels,
-                          trackWidth,
-                          endPixels - startPixels,
-                          FOREGROUND_DEPTH);
+        entry.rectHandle = renderer.pushRect(entry.color,
+                                             i * trackWidth,
+                                             startPixels,
+                                             trackWidth,
+                                             endPixels - startPixels,
+                                             FOREGROUND_DEPTH);
       } else {
         function maybePopLastPixel() {
           if (currentPixel != -1 && currentPixelFill > 0.1) {
@@ -460,7 +454,16 @@ function handleMouseMove(e) {
   } else {
     tooltip.textContent = "";
 
-    let {trackWidth, minTime, maxTime, pixelsPerSecond, scale, tracks, scrollOffset} = gState;
+    let {
+      trackWidth,
+      minTime,
+      maxTime,
+      pixelsPerSecond,
+      scale,
+      tracks,
+      scrollOffset,
+      lastHoveredRect,
+    } = gState;
 
     pixelsPerSecond *= scale;
 
@@ -497,11 +500,20 @@ function handleMouseMove(e) {
       if (hoveredEntry) {
         text += `Path: ${hoveredEntry.path}\n`;
         text += `PID: ${hoveredEntry.pid}\n`;
-        if (detail) {
+        if (hoveredEntry.detail) {
           text += `Detail: ${hoveredEntry.detail}\n`;
         }
         text += `Process Name: ${hoveredEntry.processName}\n`;
         text += `Duration: ${((hoveredEntry.end - hoveredEntry.start) * 1000).toFixed(3)}ms\n`;
+
+        renderer.maybeMutateRect(lastHoveredRect, 1.0);
+        renderer.maybeMutateRect(hoveredEntry.rectHandle, HOVERED_ENTRY_FILL);
+        gState.lastHoveredRect = hoveredEntry.rectHandle; 
+        renderer.draw();
+      } else if (lastHoveredRect) {
+        renderer.maybeMutateRect(lastHoveredRect, 1.0);
+        lastHoveredRect = null;
+        renderer.draw();
       }
 
       let lines = text.split("\n");
