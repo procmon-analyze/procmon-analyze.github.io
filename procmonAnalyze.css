@@ -1,0 +1,13 @@
+body {
+  margin: 0 0;
+}
+
+.tooltip {
+  position: absolute;
+  padding: 4px 8px;
+  background-color: white;
+  font: 16px monospace;
+  box-shadow: 2px 2px 6px 1px rgba(0, 0, 0, 0.2);
+  background-color: #fafafa;
+  border-radius: 2px;
+}

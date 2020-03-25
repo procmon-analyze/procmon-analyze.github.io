@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Procmon Analyzer</title>
+  <meta charset="utf-8"/>
+  <link rel="stylesheet" type="text/css" href="procmonAnalyze.css">
+</head>
+<body>
+  <div id="chooserWrapper">
+    <label for="csvfile">Choose a Procmon CSV:</label>
+
+    <input type="file"
+           id="csvfile" name="csvfile"
+           accept=".csv">
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <div id="timeline"></div>
+  <div id="tooltip" class="tooltip"></div>
+  <script id="vertex-shader" type="x-shader/x-vertex">
+    precision highp float;
+    attribute vec4 aVertexData;
+
+    uniform vec2 uScalingFactor;
+    uniform vec2 uTranslation;
+
+    varying float vColorFill;
+
+    void main() {
+      vec2 positionXY = (aVertexData.xy + uTranslation) * uScalingFactor;
+      gl_Position = vec4(positionXY, aVertexData.z, 1.0);
+      vColorFill = aVertexData.w;
+    }
+  </script>
+  <script id="fragment-shader" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform vec4 uGlobalColor;
+
+    varying float vColorFill;
+
+    void main() {
+      gl_FragColor = vec4(uGlobalColor.rgb, vColorFill);
+    }
+  </script>
+
+  <script src="procmonAnalyze.js" type="module"></script>
+</body>
+</html>
