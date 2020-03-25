@@ -11,3 +11,13 @@ body {
   background-color: #fafafa;
   border-radius: 2px;
 }
+
+.searchbar {
+  position: absolute;
+  left: calc(50% - 300px);
+  top: 16px;
+}
+
+.searchbar > input {
+  width: 200px;
+}

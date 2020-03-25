@@ -8,6 +8,7 @@ const HOVERED_ENTRY_FILL = 0.9;
 
 const csvInput = document.getElementById("csvfile");
 const tooltip = document.getElementById("tooltip");
+const searchbar = document.getElementById("searchbar-input");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
 // const ctx = canvas.getContext("2d");
@@ -263,8 +264,15 @@ function drawBackground() {
   }
 }
 
+// From MDN (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions)
+function escapeRegExp(string) {
+  return string.replace(/[.*+\-?^${}()|[\]\\]/g, '\\$&');
+}
+
 function drawForeground() {
   let {trackWidth, minTime, maxTime, pixelsPerSecond, tracks, totalTime, scale, scrollOffset} = gState;
+  let searchText = searchbar.value;
+  let searchRegex = new RegExp(escapeRegExp(searchText), "i");
 
   pixelsPerSecond *= scale;
 
@@ -275,76 +283,37 @@ function drawForeground() {
     let currentPixel = -1;
     let currentPixelFill = 0;
     for (let entry of track.entries) {
+      let matchesSearch = false;
+      if (searchRegex.test(entry.path)) {
+        matchesSearch = true;
+      } else if (searchRegex.test(entry.pid.toString())) {
+        matchesSearch = true;
+      } else if (searchRegex.test(entry.processName)) {
+        matchesSearch = true;
+      } else if (entry.detail && searchRegex.test(entry.detail)) {
+        matchesSearch = true;
+      }
+
+      entry.hiddenBySearch = !matchesSearch;
+      if (!matchesSearch) {
+        continue;
+      }
+
       let startRelative = entry.start - minTime - scrollOffset;
       let endRelative = entry.end - minTime - scrollOffset;
       let startPixels = startRelative * pixelsPerSecond;
-      let startPixel = Math.floor(startPixels);
       let endPixels = endRelative * pixelsPerSecond;
-      let endPixel = Math.floor(endPixels);
-      let durationPixels = endPixels - startPixels;
-      if (true) {
-        if (endPixels < -VIEWPORT_BUFFER || startPixels > canvas.height + VIEWPORT_BUFFER) {
-          continue;
-        }
 
-        entry.rectHandle = renderer.pushRect(entry.color,
-                                             i * trackWidth,
-                                             startPixels,
-                                             trackWidth,
-                                             endPixels - startPixels,
-                                             FOREGROUND_DEPTH);
-      } else {
-        function maybePopLastPixel() {
-          if (currentPixel != -1 && currentPixelFill > 0.1) {
-            renderer.pushRect(entry.color,
-                              i * trackWidth,
-                              currentPixel,
-                              trackWidth,
-                              1,
-                              FOREGROUND_DEPTH,
-                              Math.min(1, currentPixelFill));
-            currentPixel = -1;
-            currentPixelFill = 0;
-          }
-        }
-        if (startPixel == endPixel) {
-          if (startPixel != currentPixel) {
-            maybePopLastPixel();
-          }
-          currentPixel = startPixel;
-          currentPixelFill += durationPixels;
-        } else {
-          let pixelAfterStart = startPixel + 1;
-          let startPixelFill = pixelAfterStart - startPixels;
-          let pixelAfterEnd = endPixel + 1;
-          let endPixelFill = pixelAfterEnd - endPixels;
-
-          if (startPixel == currentPixel) {
-            currentPixelFill += startPixelFill;
-            maybePopLastPixel();
-          } else {
-            maybePopLastPixel();
-            renderer.pushRect(entry.color,
-                              i * trackWidth,
-                              startPixel,
-                              trackWidth,
-                              1,
-                              FOREGROUND_DEPTH,
-                              startPixelFill);
-            if (endPixel != pixelAfterStart) {
-              renderer.pushRect(entry.color,
-                                i * trackWidth,
-                                pixelAfterStart,
-                                trackWidth,
-                                endPixel - pixelAfterStart,
-                                FOREGROUND_DEPTH);
-            }
-
-            currentPixel = endPixel;
-            currentPixelFill = endPixelFill;
-          }
-        }
+      if (endPixels < -VIEWPORT_BUFFER || startPixels > canvas.height + VIEWPORT_BUFFER) {
+        continue;
       }
+
+      entry.rectHandle = renderer.pushRect(entry.color,
+                                           i * trackWidth,
+                                           startPixels,
+                                           trackWidth,
+                                           endPixels - startPixels,
+                                           FOREGROUND_DEPTH);
     }
   }
 }
@@ -478,6 +447,10 @@ function handleMouseMove(e) {
 
       let minDistance = 0.001; // 1 millisecond minimum distance
       for (let entry of track.entries) {
+        if (entry.hiddenBySearch) {
+          continue;
+        }
+
         let distance;
         if (entry.start < time && entry.end > time) {
           minDistance = 0;
@@ -570,10 +543,18 @@ function handleMouseUp(event) {
   }
 }
 
+function handleSearchChange(event) {
+  if (gState) {
+    console.log("search-change");
+    scheduleRedraw();
+  }
+}
+
 csvInput.addEventListener("change", readFileContents);
 canvas.addEventListener("mousemove", handleMouseMove);
 document.addEventListener("wheel", handleMouseWheel, {passive: false});
 document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
+searchbar.addEventListener("keydown", handleSearchChange);
 
 readFileContents();
