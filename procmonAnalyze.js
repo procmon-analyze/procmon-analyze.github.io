@@ -497,7 +497,9 @@ function handleMouseMove(e) {
       if (hoveredEntry) {
         text += `Path: ${hoveredEntry.path}\n`;
         text += `PID: ${hoveredEntry.pid}\n`;
-        text += `Detail: ${hoveredEntry.detail}\n`;
+        if (detail) {
+          text += `Detail: ${hoveredEntry.detail}\n`;
+        }
         text += `Process Name: ${hoveredEntry.processName}\n`;
         text += `Duration: ${((hoveredEntry.end - hoveredEntry.start) * 1000).toFixed(3)}ms\n`;
       }
