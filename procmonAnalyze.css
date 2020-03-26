@@ -21,3 +21,9 @@ body {
 .searchbar > input {
   width: 200px;
 }
+
+.color-by {
+  position: absolute;
+  left: calc(50% - 300px);
+  top: 64px; 
+}

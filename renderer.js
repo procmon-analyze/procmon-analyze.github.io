@@ -119,7 +119,7 @@ function buildShaderProgram(shaderInfo) {
 }
 
 function hexToColorArray(color) {
-  let match = /#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/.exec(color);
+  let match = /#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(color);
   function parseAndNormalize(hexVal) {
     return parseInt(hexVal, 16) / 255;
   }

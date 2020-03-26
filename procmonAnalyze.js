@@ -5,13 +5,15 @@ const BACKGROUND_DEPTH = 0.9;
 const TRACK_GUTTER_DEPTH = 0.8;
 const FOREGROUND_DEPTH = 0.7;
 const HOVERED_ENTRY_FILL = 0.9;
+const FILTERED_OUT_ENTRY_FILL = 0.7;
+const MAX_DETAIL_LINES = 20;
 
 const csvInput = document.getElementById("csvfile");
 const tooltip = document.getElementById("tooltip");
 const searchbar = document.getElementById("searchbar-input");
+const colorBySelect = document.getElementById("color-by-select");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
-// const ctx = canvas.getContext("2d");
 
 canvas.width = window.innerWidth * 0.5;
 canvas.height = window.innerHeight - 16;
@@ -22,6 +24,7 @@ let headerMap = {
   "Time of Day": "time",
   "Process Name": "processName",
   "PID": "pid",
+  "TID": "tid",
   "Detail": "detail",
   "Operation": "operation",
   "Path": "path",
@@ -49,54 +52,76 @@ let colors = [
   "#7fcbd7",
   "#427975",
   "#72b37e",
-  "#4736fc",
-  "#e4ba6e",
-  "#623b1a",
-  "#8fb0e9",
-  "#857ebb",
-  "#7fcbd7",
-  "#427975",
-  "#72b37e",
-  "#4736fc",
-  "#e4ba6e",
-  "#623b1a",
-  "#8fb0e9",
-  "#857ebb",
-  "#7fcbd7",
-  "#427975",
-  "#72b37e",
-  "#6f6add",
-  "#584081",
-  "#cb6b6f",
-  "#6f6add",
-  "#4736fc",
-  "#e4ba6e",
-  "#623b1a",
-  "#8fb0e9",
-  "#857ebb",
-  "#7fcbd7",
-  "#427975",
-  "#72b37e",
-  "#6f6add",
-  "#584081",
-  "#cb6b6f",
-  "#6f6add",
-  "#4736fc",
-  "#e4ba6e",
-  "#623b1a",
-  "#8fb0e9",
-  "#857ebb",
-  "#7fcbd7",
-  "#427975",
-  "#72b37e",
-  "#6f6add",
-  "#584081",
-  "#cb6b6f",
-  "#6f6add",
 ];
 
-let opColors = {};
+let lastColorIndex = -1;
+let entryColors = {};
+
+const COLOR_BY_OPERATION = 1;
+const COLOR_BY_PID = 2;
+const COLOR_BY_TID = 3;
+let colorBy = getColorByKey();
+
 let gState = null;
+
+function colorArrayToHex(colorArray) {
+  function denormalizeAndStringify(c) {
+    let x = Math.min(255, Math.floor(c * 255)).toString(16);
+    if (x.length < 2) {
+      x = "0" + x;
+    }
+    return x;
+  }
+  return "#" +
+    denormalizeAndStringify(colorArray[0]) +
+    denormalizeAndStringify(colorArray[1]) +
+    denormalizeAndStringify(colorArray[2]);
+}
+
+function hexToColorArray(color) {
+  let match = /#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/.exec(color);
+  function parseAndNormalize(hexVal) {
+    return parseInt(hexVal, 16) / 255;
+  }
+  return [
+    parseAndNormalize(match[1]),
+    parseAndNormalize(match[2]),
+    parseAndNormalize(match[3]),
+    1.0
+  ];
+}
+
+function darkenColor(color, amount) {
+  var colorArray = hexToColorArray(color);
+  var darkenFactor = 1 - amount;
+  colorArray[0] *= darkenFactor;
+  colorArray[1] *= darkenFactor;
+  colorArray[2] *= darkenFactor;
+  let result = colorArrayToHex(colorArray);
+  return result;
+}
+
+function getColor(entry) {
+  let {operation, tid, pid} = entry;
+
+  let colorKey = null;
+  switch (colorBy) {
+    case COLOR_BY_OPERATION: colorKey = operation; break;
+    case COLOR_BY_PID: colorKey = pid; break;
+    case COLOR_BY_TID: colorKey = tid; break;
+    default: throw new Error("Unsupported color by setting.");
+  }
+
+  if (!entryColors[colorKey]) {
+    let index = ++lastColorIndex;
+    let color = colors[index % colors.length];
+    if (index > colors.length) {
+      color = darkenColor(color, Math.min(0.9, Math.floor(index / colors.length) * 0.05));
+    }
+    entryColors[colorKey] = color;
+  }
+  return entryColors[colorKey];
+}
 
 async function drawData(data) {
   document.getElementById("chooserWrapper").style.display = "none";
@@ -109,12 +134,13 @@ async function drawData(data) {
     let operation = row.operation;
     let path = row.path;
     let pid = row.pid;
+    let tid = row.tid;
     let detail = row.detail;
     let processName = row.processName;
     let start = parseTimeString(row.time);
     let duration = parseFloat(row.duration);
     return {
-      operation, path, pid, start, duration, detail, processName
+      operation, path, pid, tid, start, duration, detail, processName
     };
   }).filter(row => row.duration > 0 || row.operation == "Process Start");
   data.sort((lhs, rhs) => lhs.start - rhs.start);
@@ -122,7 +148,7 @@ async function drawData(data) {
   let totalTimeByOperation = {};
 
   for (let row of data) {
-    let { operation, path, pid, start, duration, detail, processName } = row;
+    let { operation, path, pid, tid, start, duration, detail, processName } = row;
     let end = start + duration;
 
     if (start < minTime) {
@@ -146,12 +172,13 @@ async function drawData(data) {
 
     for (let candidate of tracks) {
       if (operation == candidate.operation) {
-        let lastTimeSlice = candidate.entries[candidate.entries.length - 1];
-        if (start > lastTimeSlice.end) {
+        let lastEntry = candidate.entries[candidate.entries.length - 1];
+        if (start > lastEntry.end) {
           track = candidate;
           break;
-        } else if (path == lastTimeSlice.path) {
-          lastTimeSlice.end = end;
+        } else if (path == lastEntry.path && pid == lastEntry.pid && tid == lastEntry.tid) {
+          lastEntry.end = end;
+          lastEntry.detail += "\n" + detail;
           track = candidate;
           mergedEntry = true;
           break;
@@ -167,14 +194,18 @@ async function drawData(data) {
       track = {operation, entries: []};
       tracks.push(track);
     }
-
-    if (!opColors[operation]) {
-      if (!colors.length) {
-        throw new Error("Not enough colors in array.");
-      }
-      opColors[operation] = colors.pop();
-    }
-    let entry = {start, end, path, pid, detail, processName, rectHandle: null, color: opColors[operation]};
+    let entry = {
+      start,
+      end,
+      path,
+      pid,
+      tid,
+      detail,
+      processName,
+      operation,
+      hiddenBySearch: false,
+      rectHandle: null
+    };
     track.entries.push(entry);
   }
 
@@ -195,6 +226,7 @@ async function drawData(data) {
     mouseY: 0,
     timelineIndicators: [],
     lastHoveredRect: null,
+    selectedEntry: null,
   };
 
   renderer.scale(trackWidth, rendererScale);
@@ -280,9 +312,10 @@ function drawForeground() {
     totalTime,
     rendererScale,
     rendererTranslate,
+    selectedEntry,
   } = gState;
 
-  let searchText = searchbar.value;
+  let searchText = selectedEntry ? selectedEntry.path : searchbar.value;
   let searchRegex = new RegExp(escapeRegExp(searchText), "i");
 
   for (let i = 0; i < tracks.length; i++) {
@@ -299,9 +332,8 @@ function drawForeground() {
         matchesSearch = true;
       }
 
-      entry.hiddenBySearch = !matchesSearch;
       if (!matchesSearch) {
-        continue;
+        entry.hiddenBySearch = true;
       }
 
       let startRelative = entry.start - minTime;
@@ -313,10 +345,11 @@ function drawForeground() {
         continue;
       }
 
-      entry.rectHandle = renderer.pushRect(entry.color,
+      entry.rectHandle = renderer.pushRect(getColor(entry),
                                            i, startRelative,
                                            1, endRelative - startRelative,
-                                           FOREGROUND_DEPTH);
+                                           FOREGROUND_DEPTH,
+                                           matchesSearch ? 1.0 : FILTERED_OUT_ENTRY_FILL);
     }
   }
 }
@@ -397,6 +430,48 @@ function doZoom(scaleFactor) {
   scheduleRedraw();
 }
 
+function getTrackAndEntryByMousePosition(x, y) {
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    tracks,
+    rendererTranslate,
+    rendererScale,
+    lastHoveredRect,
+  } = gState;
+
+  let track = null;
+  let hoveredEntry = null;
+  let trackIndex = Math.floor(x / trackWidth);
+  if (trackIndex < tracks.length) {
+    track = tracks[trackIndex];
+
+    let time = minTime + y / rendererScale - rendererTranslate;
+
+    let minDistance = 0.001; // 1 millisecond minimum distance
+    for (let entry of track.entries) {
+      let distance;
+      if (entry.start < time && entry.end > time) {
+        minDistance = 0;
+        hoveredEntry = entry;
+        break;
+      } else if (entry.start > time) {
+        distance = entry.start - time;
+      } else if (entry.end < time) {
+        distance = time - entry.end;
+      }
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        hoveredEntry = entry;
+      }
+    }
+  }
+
+  return {track, entry: hoveredEntry};
+}
+
 function handleMouseMove(e) {
   if (!gState) {
     return;
@@ -410,8 +485,11 @@ function handleMouseMove(e) {
   if (gState.middleMouseDown) {
     let dy = e.movementY;
     doScroll(-dy);
-  } else {
+  } else if (x < canvas.width) {
+    tooltip.style.display = "block";
     tooltip.textContent = "";
+    tooltip.style.left = `${x + 8}px`;
+    tooltip.style.top = `${y + 8}px`;
 
     let {
       trackWidth,
@@ -423,81 +501,62 @@ function handleMouseMove(e) {
       lastHoveredRect,
     } = gState;
 
-    let trackIndex = Math.floor(x / trackWidth);
-    if (trackIndex < tracks.length) {
-      let track = tracks[trackIndex];
-      tooltip.style.left = `${x + 8}px`;
-      tooltip.style.top = `${y + 8}px`;
+    let {track, entry} = getTrackAndEntryByMousePosition(x, y);
 
-      let time = minTime + y / rendererScale - rendererTranslate;
-      let hoveredEntry = null;
-
-      let minDistance = 0.001; // 1 millisecond minimum distance
-      for (let entry of track.entries) {
-        if (entry.hiddenBySearch) {
-          continue;
-        }
-
-        let distance;
-        if (entry.start < time && entry.end > time) {
-          minDistance = 0;
-          hoveredEntry = entry;
-          break;
-        } else if (entry.start > time) {
-          distance = entry.start - time;
-        } else if (entry.end < time) {
-          distance = time - entry.end;
-        }
-
-        if (distance < minDistance) {
-          minDistance = distance;
-          hoveredEntry = entry;
+    let text = "";
+    text += `Op: ${track.operation}\n`;
+    if (entry) {
+      text += `Path: ${entry.path}\n`;
+      text += `Process ID: ${entry.pid}\n`;
+      text += `Thread ID: ${entry.tid}\n`;
+      if (entry.detail) {
+        let detailLines = entry.detail.split("\n");
+        text += `Detail: ${detailLines.slice(0, MAX_DETAIL_LINES).join("\n        ")}\n`;
+        if (detailLines.length > MAX_DETAIL_LINES) {
+          text += `       (${detailLines.length - MAX_DETAIL_LINES} more entries...)\n`;
         }
       }
+      text += `Process Name: ${entry.processName}\n`;
+      text += `Duration: ${((entry.end - entry.start) * 1000).toFixed(3)}ms\n`;
 
-      let text = "";
-      text += `Op: ${track.operation}\n`;
-      if (hoveredEntry) {
-        text += `Path: ${hoveredEntry.path}\n`;
-        text += `PID: ${hoveredEntry.pid}\n`;
-        if (hoveredEntry.detail) {
-          text += `Detail: ${hoveredEntry.detail}\n`;
-        }
-        text += `Process Name: ${hoveredEntry.processName}\n`;
-        text += `Duration: ${((hoveredEntry.end - hoveredEntry.start) * 1000).toFixed(3)}ms\n`;
-
-        renderer.maybeMutateRect(lastHoveredRect, 1.0);
-        renderer.maybeMutateRect(hoveredEntry.rectHandle, HOVERED_ENTRY_FILL);
-        gState.lastHoveredRect = hoveredEntry.rectHandle; 
-        renderer.draw();
-      } else if (lastHoveredRect) {
-        renderer.maybeMutateRect(lastHoveredRect, 1.0);
-        lastHoveredRect = null;
-        renderer.draw();
+      renderer.maybeMutateRect(lastHoveredRect, 1.0);
+      if (!entry.hiddenBySearch) {
+        renderer.maybeMutateRect(entry.rectHandle, HOVERED_ENTRY_FILL);
+        gState.lastHoveredRect = entry.rectHandle;
       }
-
-      let lines = text.split("\n");
-      for (let line of lines) {
-        let div = document.createElement("div");
-        div.textContent = line;
-        tooltip.appendChild(div);
-      }
+      renderer.draw();
+    } else if (lastHoveredRect) {
+      renderer.maybeMutateRect(lastHoveredRect,
+                               1.0);
+      lastHoveredRect = null;
+      renderer.draw();
     }
+
+    let lines = text.split("\n");
+    for (let line of lines) {
+      let div = document.createElement("div");
+      div.textContent = line;
+      tooltip.appendChild(div);
+    }
+  } else {
+    tooltip.style.display = "none";
   }
 };
 
 let drawForegroundTimeout = null;
+function doRedraw() {
+  renderer.clearAll();
+  drawBackground();
+  drawForeground();
+  renderer.draw();
+  drawForegroundTimeout = null;
+}
+
 function scheduleRedraw() {
   if (drawForegroundTimeout) {
     return;
   }
-  drawForegroundTimeout = setTimeout(() => {
-    renderer.clearAll();
-    drawBackground();
-    drawForeground();
-    renderer.draw();
-    drawForegroundTimeout = null;
-  }, 250);
+  drawForegroundTimeout = setTimeout(doRedraw, 250);
 }
 
 let translateTimelineTimeout = null;
@@ -539,16 +598,32 @@ function handleMouseWheel(event) {
 }
 
 function handleMouseDown(event) {
-  if (gState && event && (event.which == 2 || event.button == 4 )) {
-    event.preventDefault();
-    gState.middleMouseDown = true;
+  if (gState) {
+    if (event.which == 2 || event.button == 4 ) {
+      event.preventDefault();
+      gState.middleMouseDown = true;
+    } else {
+      let {track, entry} = getTrackAndEntryByMousePosition(gState.mouseX, gState.mouseY);
+      if (entry) {
+        gState.selectedEntry = entry;
+        searchbar.value = "";
+        doRedraw();
+      } else if (gState.selectedEntry) {
+        gState.selectedEntry = null;
+        doRedraw();
+      }
+    }
   }
 }
 
 function handleMouseUp(event) {
-  if (gState && event && (event.which == 2 || event.button == 4 )) {
-    event.preventDefault();
-    gState.middleMouseDown = false;
+  if (gState) {
+    if (event.which == 2 || event.button == 4 ) {
+      event.preventDefault();
+      gState.middleMouseDown = false;
+    } else {
+      
+    }
   }
 }
 
@@ -558,14 +633,36 @@ function handleSearchChange(event) {
   }
 }
 
+function getColorByKey() {
+  switch (colorBySelect.value) {
+    case "operation": return COLOR_BY_OPERATION;
+    case "pid": return COLOR_BY_PID;
+    case "tid": return COLOR_BY_TID;
+    default: throw new Error("Bad colorby option.");
+  }
+}
+
+function handleColorByChange(event) {
+  colorBy = getColorByKey();
+  entryColors = {};
+  lastColorIndex = -1;
+
+  if (gState) {
+    doRedraw();
+  }
+}
+
 csvInput.addEventListener("change", readFileContents);
-canvas.addEventListener("mousemove", handleMouseMove);
+document.addEventListener("mousemove", handleMouseMove);
 document.addEventListener("wheel", handleMouseWheel, {passive: false});
 document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
+colorBySelect.addEventListener("change", handleColorByChange);
 
 renderer.startup();
 
-readFileContents();
+if (window.location.href.indexOf("localhost") != -1) {
+  readFileContents();
+}
 
