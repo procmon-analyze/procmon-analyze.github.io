@@ -417,11 +417,13 @@ function doZoom(scaleFactor) {
   let mousePositionAbsolute = windowTopInPixels + mouseY;
   let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
   let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
-  let newTranslate = -Math.max(0, newWindowTopInPixels / (rendererScale * scaleFactor));
 
   let minScale = canvas.height / (maxTime - minTime);
   gState.rendererScale = Math.max(minScale, gState.rendererScale * scaleFactor);
-  gState.rendererTranslate = newTranslate;
+  let totalTime = maxTime - minTime;
+  let windowHeightInSeconds = canvas.height / rendererScale;
+  gState.rendererTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds),
+                                                  -newWindowTopInPixels / (rendererScale * scaleFactor)));
 
   renderer.scale(trackWidth, gState.rendererScale);
   renderer.translate(0, gState.rendererTranslate);
