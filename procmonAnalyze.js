@@ -184,8 +184,6 @@ async function drawData(data) {
   let totalTime = maxTime - minTime;
   let trackWidth = canvas.width / tracks.length;
   let pixelsPerSecond = canvas.height / totalTime;
-  let scale = 10;
-  let scrollOffset = 0;
   gState = {
     trackWidth,
     minTime,
@@ -193,8 +191,8 @@ async function drawData(data) {
     pixelsPerSecond,
     tracks,
     totalTime,
-    scale,
-    scrollOffset,
+    scale: 10,
+    scrollOffset: 0,
     rendererScale: 1,
     rendererScroll: 0,
     mouseX: 0,
@@ -236,9 +234,9 @@ function drawBackground() {
       let color = "#fafafa";
       renderer.pushRect(color,
                         i * trackWidth,
-                        -canvas.height,
+                        -scrollOffset * pixelsPerSecond,
                         trackWidth * 0.1,
-                        canvas.height * 3,
+                        (maxTime - minTime) * pixelsPerSecond,
                         TRACK_GUTTER_DEPTH);
       lastOperation = track.operation;
     }
