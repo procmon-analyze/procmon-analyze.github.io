@@ -505,6 +505,7 @@ function scheduleRedraw() {
   }, 250);
 }
 
+let isTrackpadScroll = false;
 function handleMouseWheel(event) {
   if (gState) {
     event.preventDefault();
@@ -512,7 +513,18 @@ function handleMouseWheel(event) {
       let scaleFactor = 1 + event.deltaY * -0.05;
       doZoom(scaleFactor);
     } else {
-      doScroll(event.deltaY);
+      // This is an attempt at detecting trackpads. Mouse wheel scrolling
+      // usually has detents set up which cause scrolls larger than 1.
+      // This seems to be the best I can do for the time being - I'm open
+      // to better solutions.
+      if (event.deltaY == 1 || event.deltaY == -1) {
+        isTrackpadScroll = true;
+      }
+      let dy = event.deltaY;
+      if (!isTrackpadScroll) {
+        dy *= 10;
+      }
+      doScroll(dy);
     }
   }
 }
