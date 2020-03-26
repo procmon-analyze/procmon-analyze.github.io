@@ -250,14 +250,15 @@ function drawBackground() {
   let printSeconds = timelineScale == 1;
   for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
     let offset = i * timelineScale;
-    if (offset < -VIEWPORT_BUFFER || offset > canvas.height + VIEWPORT_BUFFER) {
+    let offsetPx = (offset + rendererTranslate) * rendererScale;
+    if (offsetPx < -VIEWPORT_BUFFER || offsetPx > canvas.height + VIEWPORT_BUFFER) {
       continue;
     }
 
     let div = document.createElement("div");
     div.style.position = "fixed";
     div.style.left = `${canvas.width}px`;
-    div.style.top = `${(offset + rendererTranslate) * rendererScale}px`;
+    div.style.top = `${offsetPx}px`;
     div.textContent = timelineScale == 1 ? `${i}s` : `${Math.round(i * timelineScale * 1000)}ms`;
 
     timeline.appendChild(div);
@@ -343,13 +344,6 @@ async function readFileContents() {
   }
 };
 
-function translateTimeline() {
-  let {timelineIndicators, rendererTranslate, rendererScale} = gState;
-  for (let indicator of timelineIndicators) {
-    indicator.div.style.top = `${(indicator.offset + rendererTranslate) * rendererScale}px`;
-  }
-}
-
 function doScroll(dy) {
   let {
     trackWidth,
@@ -369,7 +363,7 @@ function doScroll(dy) {
 
   renderer.translate(0, gState.rendererTranslate);
   renderer.draw();
-  translateTimeline();
+  scheduleTranslateTimeline();
   scheduleRedraw();
 }
 
@@ -392,13 +386,14 @@ function doZoom(scaleFactor) {
   let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
   let newTranslate = -Math.max(0, newWindowTopInPixels / (rendererScale * scaleFactor));
 
-  gState.rendererScale *= scaleFactor;
+  let minScale = canvas.height / (maxTime - minTime);
+  gState.rendererScale = Math.max(minScale, gState.rendererScale * scaleFactor);
   gState.rendererTranslate = newTranslate;
 
   renderer.scale(trackWidth, gState.rendererScale);
   renderer.translate(0, gState.rendererTranslate);
   renderer.draw();
-  translateTimeline();
+  scheduleTranslateTimeline();
   scheduleRedraw();
 }
 
@@ -503,6 +498,20 @@ function scheduleRedraw() {
     renderer.draw();
     drawForegroundTimeout = null;
   }, 250);
+}
+
+let translateTimelineTimeout = null;
+function scheduleTranslateTimeline() {
+  if (translateTimelineTimeout) {
+    return;
+  }
+  translateTimelineTimeout = setTimeout(() => {
+    let {timelineIndicators, rendererTranslate, rendererScale} = gState;
+    for (let indicator of timelineIndicators) {
+      indicator.div.style.top = `${(indicator.offset + rendererTranslate) * rendererScale}px`;
+    }
+    translateTimelineTimeout = null;
+  }, 10);
 }
 
 let isTrackpadScroll = false;
