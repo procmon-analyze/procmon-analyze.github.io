@@ -25,14 +25,13 @@
     precision highp float;
     attribute vec4 aVertexData;
 
-    uniform vec2 uScalingFactor;
-    uniform vec2 uTranslation;
+    uniform mat3 uTransform;
 
     varying float vColorFill;
 
     void main() {
-      vec2 positionXY = (aVertexData.xy + uTranslation) * uScalingFactor;
-      gl_Position = vec4(positionXY, aVertexData.z, 1.0);
+      vec3 transformed = uTransform * vec3(aVertexData.xy, 1.0);
+      gl_Position = vec4(transformed.xy, aVertexData.z, 1.0);
       vColorFill = aVertexData.w;
     }
   </script>

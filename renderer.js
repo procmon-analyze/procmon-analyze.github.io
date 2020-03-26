@@ -8,12 +8,11 @@ let gl = null;
 let glCanvas = null;
 let shaderProgram = null;
 let aspectRatio;
-let defaultTranslation = [0.0, 0.0];
-let defaultScale = [1.0, 1.0];
-let userScale = [1.0, 1.0];
-let userTranslation = [0.0, 0.0];
-let uTranslation;
-let uScalingFactor;
+let viewTranslation = [0.0, 0.0];
+let viewScale = [1.0, 1.0];
+let worldScale = [1.0, 1.0];
+let worldTranslation = [0.0, 0.0];
+let uTransform;
 let uGlobalColor;
 let aVertexData;
 
@@ -21,6 +20,68 @@ let rectsByColor = {};
 let generationId = 1;
 
 window.addEventListener("load", startup, false);
+
+function printMatrix(mat) {
+  let strs = mat.map(x => x.toString());
+  let maxLen = 0;
+  for (let s of strs) {
+    if (s.length > maxLen) {
+      maxLen = s.length;
+    }
+  }
+
+  function padRight(str, length) {
+    while (str.length < length) {
+      str += " ";
+    }
+    return str;
+  }
+
+  let m = strs.map(s => padRight(s, maxLen));
+  console.log(`|${m[0]} ${m[3]} ${m[6]}|\n|${m[0 + 1]} ${m[3 + 1]} ${m[6 + 1]}|\n|${m[0 + 2]} ${m[3 + 2]} ${m[6 + 2]}|`);
+}
+
+function vecTimesScalar(vec, scalar) {
+  let result = new Float32Array(vec);
+  result[0] *= scalar;
+  result[1] *= scalar;
+  result[2] *= scalar;
+  return result;
+}
+
+function vecPlusVec(vec, otherVec) {
+  let result = new Float32Array(vec);
+  result[0] += otherVec[0];
+  result[1] += otherVec[1];
+  result[2] += otherVec[2];
+  return result;
+}
+
+function matTimesVec(matrix, vec) {
+  let result = vecTimesScalar(matrix.slice(0, 3), vec[0]);
+  result = vecPlusVec(result, vecTimesScalar(matrix.slice(3, 6), vec[1]));
+  result = vecPlusVec(result, vecTimesScalar(matrix.slice(6, 9), vec[2]));
+  return result;
+}
+
+function matTimesMat(matrix, otherMatrix) {
+  let result = new Float32Array(9);
+  result.set(matTimesVec(matrix, otherMatrix.slice(0, 3)), 0);
+  result.set(matTimesVec(matrix, otherMatrix.slice(3, 6)), 3);
+  result.set(matTimesVec(matrix, otherMatrix.slice(6, 9)), 6);
+  return result;
+}
+
+class Matrix3x3 {
+  constructor(vals) {
+    this.vals = vals;
+  }
+
+  timesVec(vec) {
+    let result = 0;
+    result += this.vals[0]
+  }
+}
 
 function compileShader(id, type) {
   let code = document.getElementById(id).firstChild.nodeValue;
@@ -152,14 +213,38 @@ function clearAll() {
 }
 
 function scale(scaleX, scaleY) {
-  userScale = [scaleX, scaleY];
+  worldScale = [scaleX, scaleY];
 }
 
 window.translate = translate;
 window.draw = draw;
 
 function translate(translateX, translateY) {
-  userTranslation = [translateX, translateY];
+  worldTranslation = [translateX, translateY];
+}
+
+function getIdentityMatrix() {
+  return new Float32Array([
+    1, 0, 0,
+    0, 1, 0,
+    0, 0, 1,
+  ]);
+}
+
+function getScaleMatrix(scale) {
+  return new Float32Array([
+    scale[0], 0, 0,
+    0, scale[1], 0,
+    0, 0, 1,
+  ]);
+}
+
+function getTranslationMatrix(translation) {
+  return new Float32Array([
+    1, 0, 0,
+    0, 1, 0,
+    translation[0], translation[1], 1,
+  ]);
 }
 
 function draw() {
@@ -171,19 +256,19 @@ function draw() {
 
   gl.useProgram(shaderProgram);
 
-  uScalingFactor =
-      gl.getUniformLocation(shaderProgram, "uScalingFactor");
-  uTranslation =
-      gl.getUniformLocation(shaderProgram, "uTranslation");
+  uTransform =
+      gl.getUniformLocation(shaderProgram, "uTransform");
   uGlobalColor =
       gl.getUniformLocation(shaderProgram, "uGlobalColor");
   aVertexData =
       gl.getAttribLocation(shaderProgram, "aVertexData");
 
-  let scale = defaultScale.map((s, i) => s * userScale[i]);
-  gl.uniform2fv(uScalingFactor, scale);
-  gl.uniform2fv(uTranslation,
-                defaultTranslation.map((t, i) => t + userTranslation[i]));
+  let transform = getTranslationMatrix(worldTranslation);
+  transform = matTimesMat(getScaleMatrix(worldScale), transform);
+  transform = matTimesMat(getTranslationMatrix(viewTranslation), transform);
+  transform = matTimesMat(getScaleMatrix(viewScale), transform);
+
+  gl.uniformMatrix3fv(uTransform, false, transform);
 
   for (let alphaPass of [false, true]) {
     if (alphaPass) {
@@ -230,8 +315,8 @@ function startup() {
 
   shaderProgram = buildShaderProgram(shaderSet);
 
-  defaultTranslation = [-glCanvas.width / 2.0, -glCanvas.height / 2.0];
-  defaultScale = [2.0 / glCanvas.width, -2.0 / glCanvas.height];
+  viewTranslation = [-glCanvas.width / 2.0, -glCanvas.height / 2.0];
+  viewScale = [2.0 / glCanvas.width, -2.0 / glCanvas.height];
 }
 
 export default {

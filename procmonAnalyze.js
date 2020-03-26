@@ -178,28 +178,27 @@ async function drawData(data) {
     track.entries.push(entry);
   }
 
-
   tracks.sort((lhs, rhs) => totalTimeByOperation[rhs.operation] - totalTimeByOperation[lhs.operation]);
 
   let totalTime = maxTime - minTime;
   let trackWidth = canvas.width / tracks.length;
-  let pixelsPerSecond = canvas.height / totalTime;
+  let rendererScale = canvas.height / totalTime;
   gState = {
-    trackWidth,
     minTime,
     maxTime,
-    pixelsPerSecond,
     tracks,
     totalTime,
-    scale: 10,
-    scrollOffset: 0,
-    rendererScale: 1,
-    rendererScroll: 0,
+    trackWidth,
+    rendererScale,
+    rendererTranslate: 0,
     mouseX: 0,
     mouseY: 0,
     timelineIndicators: [],
     lastHoveredRect: null,
   };
+
+  renderer.scale(trackWidth, rendererScale);
+  renderer.translate(0, 0);
 
   renderer.clearAll();
   drawBackground();
@@ -208,22 +207,28 @@ async function drawData(data) {
 }
 
 function drawBackground() {
-  let {trackWidth, minTime, maxTime, pixelsPerSecond, tracks, totalTime, scale, scrollOffset} = gState;
-
-  pixelsPerSecond *= scale;
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    tracks,
+    totalTime,
+    rendererTranslate,
+    rendererScale
+  } = gState;
 
   let timelineScale =
-    pixelsPerSecond < 1000 ? 1 :
-    pixelsPerSecond < 10000 ? 0.1 :
-    pixelsPerSecond < 100000 ? 0.01 : 0.001;
+    rendererScale < 1000 ? 1 :
+    rendererScale < 10000 ? 0.1 :
+    rendererScale < 100000 ? 0.01 : 0.001;
 
   for (let i = 0; i < Math.ceil(totalTime / timelineScale); i++) {
     let color = (i & 1) ? "#ffffff" : "#efefef";
     renderer.pushRect(color,
                       0,
-                      timelineScale * pixelsPerSecond * (i - scrollOffset / timelineScale),
-                      canvas.width,
-                      timelineScale * pixelsPerSecond,
+                      timelineScale * i,
+                      tracks.length,
+                      timelineScale,
                       BACKGROUND_DEPTH - 0.05);
   }
 
@@ -233,10 +238,8 @@ function drawBackground() {
     if (track.operation != lastOperation) {
       let color = "#fafafa";
       renderer.pushRect(color,
-                        i * trackWidth,
-                        -scrollOffset * pixelsPerSecond,
-                        trackWidth * 0.1,
-                        (maxTime - minTime) * pixelsPerSecond,
+                        i, 0,
+                        0.1, maxTime - minTime,
                         TRACK_GUTTER_DEPTH);
       lastOperation = track.operation;
     }
@@ -246,7 +249,7 @@ function drawBackground() {
   timeline.textContent = "";
   let printSeconds = timelineScale == 1;
   for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
-    let offset = (i * timelineScale - scrollOffset) * pixelsPerSecond;
+    let offset = i * timelineScale;
     if (offset < -VIEWPORT_BUFFER || offset > canvas.height + VIEWPORT_BUFFER) {
       continue;
     }
@@ -254,7 +257,7 @@ function drawBackground() {
     let div = document.createElement("div");
     div.style.position = "fixed";
     div.style.left = `${canvas.width}px`;
-    div.style.top = `${offset}px`;
+    div.style.top = `${(offset + rendererTranslate) * rendererScale}px`;
     div.textContent = timelineScale == 1 ? `${i}s` : `${Math.round(i * timelineScale * 1000)}ms`;
 
     timeline.appendChild(div);
@@ -268,18 +271,21 @@ function escapeRegExp(string) {
 }
 
 function drawForeground() {
-  let {trackWidth, minTime, maxTime, pixelsPerSecond, tracks, totalTime, scale, scrollOffset} = gState;
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    tracks,
+    totalTime,
+    rendererScale,
+    rendererTranslate,
+  } = gState;
+
   let searchText = searchbar.value;
   let searchRegex = new RegExp(escapeRegExp(searchText), "i");
 
-  pixelsPerSecond *= scale;
-
-  let maxVisualStart = window.innerHeight * pixelsPerSecond;
-
   for (let i = 0; i < tracks.length; i++) {
     let track = tracks[i];
-    let currentPixel = -1;
-    let currentPixelFill = 0;
     for (let entry of track.entries) {
       let matchesSearch = false;
       if (searchRegex.test(entry.path)) {
@@ -297,20 +303,18 @@ function drawForeground() {
         continue;
       }
 
-      let startRelative = entry.start - minTime - scrollOffset;
-      let endRelative = entry.end - minTime - scrollOffset;
-      let startPixels = startRelative * pixelsPerSecond;
-      let endPixels = endRelative * pixelsPerSecond;
+      let startRelative = entry.start - minTime;
+      let endRelative = entry.end - minTime;
+      let startPixels = (startRelative + rendererTranslate) * rendererScale;
+      let endPixels = (endRelative + rendererTranslate) * rendererScale;
 
       if (endPixels < -VIEWPORT_BUFFER || startPixels > canvas.height + VIEWPORT_BUFFER) {
         continue;
       }
 
       entry.rectHandle = renderer.pushRect(entry.color,
-                                           i * trackWidth,
-                                           startPixels,
-                                           trackWidth,
-                                           endPixels - startPixels,
+                                           i, startRelative,
+                                           1, endRelative - startRelative,
                                            FOREGROUND_DEPTH);
     }
   }
@@ -340,9 +344,9 @@ async function readFileContents() {
 };
 
 function translateTimeline() {
-  let {timelineIndicators, rendererScroll, rendererScale} = gState;
+  let {timelineIndicators, rendererTranslate, rendererScale} = gState;
   for (let indicator of timelineIndicators) {
-    indicator.div.style.top = `${indicator.offset + rendererScroll * rendererScale}px`;
+    indicator.div.style.top = `${(indicator.offset + rendererTranslate) * rendererScale}px`;
   }
 }
 
@@ -351,21 +355,19 @@ function doScroll(dy) {
     trackWidth,
     minTime,
     maxTime,
-    pixelsPerSecond,
-    scale,
-    scrollOffset,
+    rendererScale,
+    rendererTranslate,
     tracks,
     mouseX,
     mouseY,
   } = gState;
 
-  pixelsPerSecond *= scale;
+  let totalTime = maxTime - minTime;
+  let windowHeightInSeconds = canvas.height / rendererScale;
+  let newTranslate = rendererTranslate - dy / rendererScale;
+  gState.rendererTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds), newTranslate));
 
-  let newScrollOffset = scrollOffset - dy / pixelsPerSecond;
-  gState.scrollOffset = Math.max(0, newScrollOffset);
-  gState.rendererScroll += dy;
-
-  renderer.translate(0, gState.rendererScroll);
+  renderer.translate(0, gState.rendererTranslate);
   renderer.draw();
   translateTimeline();
   scheduleRedraw();
@@ -376,30 +378,25 @@ function doZoom(scaleFactor) {
     trackWidth,
     minTime,
     maxTime,
-    pixelsPerSecond,
-    scale,
-    scrollOffset,
+    rendererScale,
+    rendererTranslate,
     tracks,
     mouseX,
     mouseY
   } = gState;
 
-  pixelsPerSecond *= scale;
-
-  let windowTopInPixels = scrollOffset * pixelsPerSecond;
+  let windowTopInPixels = -rendererTranslate * rendererScale;
   let windowCenterInPixels = windowTopInPixels + canvas.height / 2;
   let mousePositionAbsolute = windowTopInPixels + mouseY;
   let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
   let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
-  let newScrollOffset = Math.max(0, newWindowTopInPixels / (pixelsPerSecond * scaleFactor));
+  let newTranslate = -Math.max(0, newWindowTopInPixels / (rendererScale * scaleFactor));
 
-  gState.scale *= scaleFactor;
   gState.rendererScale *= scaleFactor;
-  gState.scrollOffset = newScrollOffset;
-  gState.rendererScroll = (gState.rendererScale - 1) * (canvas.height / 2 - mouseY) / gState.rendererScale;
+  gState.rendererTranslate = newTranslate;
 
-  renderer.scale(1, gState.rendererScale);
-  renderer.translate(0, gState.rendererScroll);
+  renderer.scale(trackWidth, gState.rendererScale);
+  renderer.translate(0, gState.rendererTranslate);
   renderer.draw();
   translateTimeline();
   scheduleRedraw();
@@ -417,7 +414,7 @@ function handleMouseMove(e) {
 
   if (gState.middleMouseDown) {
     let dy = e.movementY;
-    doScroll(dy);
+    doScroll(-dy);
   } else {
     tooltip.textContent = "";
 
@@ -425,14 +422,11 @@ function handleMouseMove(e) {
       trackWidth,
       minTime,
       maxTime,
-      pixelsPerSecond,
-      scale,
       tracks,
-      scrollOffset,
+      rendererTranslate,
+      rendererScale,
       lastHoveredRect,
     } = gState;
-
-    pixelsPerSecond *= scale;
 
     let trackIndex = Math.floor(x / trackWidth);
     if (trackIndex < tracks.length) {
@@ -440,7 +434,7 @@ function handleMouseMove(e) {
       tooltip.style.left = `${x + 8}px`;
       tooltip.style.top = `${y + 8}px`;
 
-      let time = minTime + y / pixelsPerSecond + scrollOffset;
+      let time = minTime + y / rendererScale - rendererTranslate;
       let hoveredEntry = null;
 
       let minDistance = 0.001; // 1 millisecond minimum distance
@@ -503,10 +497,6 @@ function scheduleRedraw() {
     return;
   }
   drawForegroundTimeout = setTimeout(() => {
-    gState.rendererScale = 1;
-    gState.rendererScroll = 0;
-    renderer.scale(1, 1);
-    renderer.translate(0, 0);
     renderer.clearAll();
     drawBackground();
     drawForeground();
@@ -522,7 +512,7 @@ function handleMouseWheel(event) {
       let scaleFactor = 1 + event.deltaY * -0.05;
       doZoom(scaleFactor);
     } else {
-      doScroll(-event.deltaY);
+      doScroll(event.deltaY);
     }
   }
 }
@@ -543,7 +533,6 @@ function handleMouseUp(event) {
 
 function handleSearchChange(event) {
   if (gState) {
-    console.log("search-change");
     scheduleRedraw();
   }
 }
@@ -555,4 +544,7 @@ document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
 
+renderer.startup();
+
 readFileContents();
+
