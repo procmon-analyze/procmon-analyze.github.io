@@ -1,6 +1,5 @@
 body {
   margin: 0 0;
-  display: flex;
 }
 
 .tooltip {
@@ -29,7 +28,16 @@ body {
   top: 64px; 
 }
 
+#canvas {
+  float: left;
+}
+
+#entry-canvas {
+  float: left;
+}
+
 #read-info {
+  float: left;
   padding: 4px 16px;
   max-width: 40vw;
   max-height: 99vh;
