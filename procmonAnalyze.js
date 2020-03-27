@@ -640,7 +640,8 @@ function drawPathInfo(path) {
       return result;
     };
 
-    for (let i = reads.length-1; i >= 0; i--) {
+
+    for (let i = 0; i < reads.length; i++) {
       let {readDetail} = reads[i];
       let {offset, length} = readDetail;
       let endAddress = offset + length;
@@ -649,7 +650,7 @@ function drawPathInfo(path) {
       }
 
       let rgb = redBlueLerp(i / reads.length);
-      entryRenderer.pushRect(colorArrayToHex(rgb), 0, offset, 1, length, 0.9);
+      entryRenderer.pushRect(colorArrayToHex(rgb), 0, offset, 1, length, (i / reads.length) / 2 + 0.2);
     }
 
     entryRenderer.scale(entryCanvas.width, entryCanvas.height / maxAddress);
