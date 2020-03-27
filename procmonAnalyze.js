@@ -1,12 +1,12 @@
 import {parseCSV} from "./parseCSV.js"
-import renderer from "./renderer.js"
+import Renderer from "./renderer.js"
 
 const BACKGROUND_DEPTH = 0.9;
 const TRACK_GUTTER_DEPTH = 0.8;
 const FOREGROUND_DEPTH = 0.7;
 const HOVERED_ENTRY_FILL = 0.9;
 const FILTERED_OUT_ENTRY_FILL = 0.7;
-const MAX_DETAIL_LINES = 20;
+const MAX_DETAIL_LINES = 24;
 
 const csvInput = document.getElementById("csvfile");
 const tooltip = document.getElementById("tooltip");
@@ -14,9 +14,17 @@ const searchbar = document.getElementById("searchbar-input");
 const colorBySelect = document.getElementById("color-by-select");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
+const entryCanvas = document.getElementById("entry-canvas");
+const readInfo = document.getElementById("read-info");
+
+const renderer = new Renderer(canvas);
+const entryRenderer = new Renderer(entryCanvas);
 
 canvas.width = window.innerWidth * 0.5;
 canvas.height = window.innerHeight - 16;
+
+entryCanvas.width = window.innerWidth * 0.05;
+entryCanvas.height = window.innerHeight - 16;
 
 const VIEWPORT_BUFFER = canvas.height;
 
@@ -123,6 +131,20 @@ function getColor(entry) {
   return entryColors[colorKey];
 }
 
+function parseReadDetail(detail) {
+  let pattern = /Offset: ([0-9,]+) Length: ([0-9,]+)/;
+  let match = pattern.exec(detail);
+  if (match) {
+    return {
+      offset: parseInt(match[1].replace(/,/g, "")),
+      length: parseInt(match[2].replace(/,/g, "")),
+    };
+  } else {
+    console.error("Couldn't parse detail: " + detail);
+    return null;
+  }
+}
+
 async function drawData(data) {
   document.getElementById("chooserWrapper").style.display = "none";
 
@@ -146,6 +168,8 @@ async function drawData(data) {
   data.sort((lhs, rhs) => lhs.start - rhs.start);
 
   let totalTimeByOperation = {};
+  let readsByPath = {};
+  let totalReadByPath = {};
 
   for (let row of data) {
     let { operation, path, pid, tid, start, duration, detail, processName } = row;
@@ -162,7 +186,7 @@ async function drawData(data) {
     }
 
     let track = null;
-    let mergedEntry = false;
+    let entry = false;
 
     if (!totalTimeByOperation[operation]) {
       totalTimeByOperation[operation] = 0;
@@ -180,33 +204,42 @@ async function drawData(data) {
           lastEntry.end = end;
           lastEntry.detail += "\n" + detail;
           track = candidate;
-          mergedEntry = true;
+          entry = lastEntry;
           break;
         }
       }
     }
 
-    if (mergedEntry) {
-      continue;
+    if (!entry) {
+      if (!track) {
+        track = {operation, entries: []};
+        tracks.push(track);
+      }
+      entry = {
+        start,
+        end,
+        path,
+        pid,
+        tid,
+        detail,
+        processName,
+        operation,
+        hiddenBySearch: false,
+        rectHandle: null
+      };
+      track.entries.push(entry);
     }
 
-    if (!track) {
-      track = {operation, entries: []};
-      tracks.push(track);
+    if (operation == "ReadFile" && detail) {
+      if (!readsByPath[path]) {
+        readsByPath[path] = [];
+        totalReadByPath[path] = 0;
+      }
+
+      let readDetail = parseReadDetail(detail);
+      readsByPath[path].push({readDetail, entry, start, end});
+      totalReadByPath[path] += readDetail.length;
     }
-    let entry = {
-      start,
-      end,
-      path,
-      pid,
-      tid,
-      detail,
-      processName,
-      operation,
-      hiddenBySearch: false,
-      rectHandle: null
-    };
-    track.entries.push(entry);
   }
 
   tracks.sort((lhs, rhs) => totalTimeByOperation[rhs.operation] - totalTimeByOperation[lhs.operation]);
@@ -221,6 +254,8 @@ async function drawData(data) {
     totalTime,
     trackWidth,
     rendererScale,
+    readsByPath,
+    totalReadByPath,
     rendererTranslate: 0,
     mouseX: 0,
     mouseY: 0,
@@ -236,6 +271,8 @@ async function drawData(data) {
   drawBackground();
   drawForeground();
   renderer.draw();
+
+  drawTopPathsInfo();
 }
 
 function drawBackground() {
@@ -289,7 +326,7 @@ function drawBackground() {
 
     let div = document.createElement("div");
     div.style.position = "fixed";
-    div.style.left = `${canvas.width}px`;
+    div.style.left = `${canvas.width - 64}px`;
     div.style.top = `${offsetPx}px`;
     div.textContent = timelineScale == 1 ? `${i}s` : `${Math.round(i * timelineScale * 1000)}ms`;
 
@@ -543,7 +580,88 @@ function handleMouseMove(e) {
   } else {
     tooltip.style.display = "none";
   }
-};
+}
+
+function drawTopPathsInfo() {
+  if (gState) {
+    let {
+      totalTime,
+      readsByPath,
+      totalReadByPath,
+    } = gState;
+
+    let totalRead = Object.entries(totalReadByPath);
+    totalRead.sort((lhs, rhs) => rhs[1] - lhs[1]);
+
+    function padRight(str, length) {
+      while (str.length < length) {
+        str += " ";
+      }
+      return str;
+    }
+
+    let maxStrLen = 0;
+    totalRead = totalRead.map(([path, amount]) => {
+      let result = [path, amount.toLocaleString()];
+      if (result[1].length > maxStrLen) {
+        maxStrLen = result[1].length;
+      }
+      return result;
+    });
+    let text = "";
+    readInfo.textContent = "";
+    for (let [path, amount] of totalRead) {
+      text += `${padRight(amount, maxStrLen)}  ${path}\n`;
+    }
+    readInfo.textContent = text;
+  }
+}
+
+function drawPathInfo(path) {
+  if (gState) {
+    let {
+      totalTime,
+      readsByPath,
+      totalReadByPath,
+    } = gState;
+
+    entryRenderer.clearAll();
+
+    let reads = readsByPath[path] || [];
+    let minAddress = 0;
+    let maxAddress = 0;
+    let red = [.9,.2,.1];
+    let blue = [.2,.1,.9];
+    let redBlueLerp = (x) => {
+      let result = new Array(red.length);
+      for (let i = 0; i < red.length; i++) {
+        result[i] = red[i] * x + blue[i] * (1 - x);
+      }
+      return result;
+    };
+
+    for (let i = reads.length-1; i >= 0; i--) {
+      let {readDetail} = reads[i];
+      let {offset, length} = readDetail;
+      let endAddress = offset + length;
+      if (endAddress > maxAddress) {
+        maxAddress = endAddress;
+      }
+
+      let rgb = redBlueLerp(i / reads.length);
+      entryRenderer.pushRect(colorArrayToHex(rgb), 0, offset, 1, length, 0.9);
+    }
+
+    entryRenderer.scale(entryCanvas.width, entryCanvas.height / maxAddress);
+    entryRenderer.draw();
+
+    readInfo.textContent = "";
+    let text = "";
+    text += `Read info for ${path}:\n`;
+    text += `Read ${totalReadByPath[path].toLocaleString()} bytes from a range of ${(maxAddress - minAddress).toLocaleString()}\n`;
+    readInfo.textContent = text;
+  }
+}
 
 let drawForegroundTimeout = null;
 function doRedraw() {
@@ -610,8 +728,10 @@ function handleMouseDown(event) {
         gState.selectedEntry = entry;
         searchbar.value = "";
         doRedraw();
+        drawPathInfo(entry.path);
       } else if (gState.selectedEntry) {
         gState.selectedEntry = null;
+        drawTopPathsInfo();
         doRedraw();
       }
     }
@@ -656,13 +776,14 @@ function handleColorByChange(event) {
 
 csvInput.addEventListener("change", readFileContents);
 document.addEventListener("mousemove", handleMouseMove);
-document.addEventListener("wheel", handleMouseWheel, {passive: false});
+canvas.addEventListener("wheel", handleMouseWheel, {passive: false});
 document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
 colorBySelect.addEventListener("change", handleColorByChange);
 
 renderer.startup();
+entryRenderer.startup();
 
 if (window.location.href.indexOf("localhost") != -1) {
   readFileContents();
