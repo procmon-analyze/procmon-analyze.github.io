@@ -161,6 +161,9 @@ async function drawData(data) {
     let processName = row.processName;
     let start = parseTimeString(row.time);
     let duration = parseFloat(row.duration);
+    if (isNaN(duration)) {
+      duration = 0.01;
+    }
     return {
       operation, path, pid, tid, start, duration, detail, processName
     };
@@ -212,7 +215,7 @@ async function drawData(data) {
 
     if (!entry) {
       if (!track) {
-        track = {operation, entries: []};
+        track = {operation, entries: [], index: tracks.length};
         tracks.push(track);
       }
       entry = {
@@ -224,8 +227,9 @@ async function drawData(data) {
         detail,
         processName,
         operation,
+        track,
         hiddenBySearch: false,
-        rectHandle: null
+        rectHandle: null,
       };
       track.entries.push(entry);
     }
@@ -369,9 +373,7 @@ function drawForeground() {
         matchesSearch = true;
       }
 
-      if (!matchesSearch) {
-        entry.hiddenBySearch = true;
-      }
+      entry.hiddenBySearch = !matchesSearch;
 
       let startRelative = entry.start - minTime;
       let endRelative = entry.end - minTime;
@@ -469,7 +471,7 @@ function doZoom(scaleFactor) {
   scheduleRedraw();
 }
 
-function getTrackAndEntryByMousePosition(x, y) {
+function getEntryByMousePosition(x, y) {
   let {
     trackWidth,
     minTime,
@@ -508,7 +510,68 @@ function getTrackAndEntryByMousePosition(x, y) {
     }
   }
 
-  return {track, entry: hoveredEntry};
+  return hoveredEntry;
+}
+
+function highlightEntry(entry) {
+  if (entry && entry.rectHandle != gState.lastHoveredRect) {
+    renderer.maybeMutateRect(gState.lastHoveredRect, 1.0);
+  }
+  if (entry && !entry.hiddenBySearch) {
+    renderer.maybeMutateRect(entry.rectHandle, HOVERED_ENTRY_FILL);
+    gState.lastHoveredRect = entry.rectHandle;
+  } else {
+    gState.lastHoveredRect = null;
+  }
+  renderer.draw();
+}
+
+function showEntryTooltip(entry, position) {
+  let {x, y} = position;
+  if (entry) {
+    let track = entry.track;
+    tooltip.style.display = "block";
+    tooltip.textContent = "";
+    tooltip.style.left = `${x + 8}px`;
+    tooltip.style.top = `${y + 8}px`;
+
+    let {
+      trackWidth,
+      minTime,
+      maxTime,
+      tracks,
+      rendererTranslate,
+      rendererScale,
+      lastHoveredRect,
+    } = gState;
+
+    let text = "";
+    text += `Op: ${entry ? entry.operation : track.operation}\n`;
+    text += `Path: ${entry.path}\n`;
+    text += `Process ID: ${entry.pid}\n`;
+    text += `Thread ID: ${entry.tid}\n`;
+    if (entry.detail) {
+      let detailLines = entry.detail.split("\n");
+      text += `Detail: ${detailLines.slice(0, MAX_DETAIL_LINES).join("\n        ")}\n`;
+      if (detailLines.length > MAX_DETAIL_LINES) {
+        text += `       (${detailLines.length - MAX_DETAIL_LINES} more entries...)\n`;
+      }
+    }
+    text += `Process Name: ${entry.processName}\n`;
+    text += `Duration: ${((entry.end - entry.start) * 1000).toFixed(3)}ms\n`;
+
+    let lines = text.split("\n");
+    for (let line of lines) {
+      let div = document.createElement("div");
+      div.textContent = line;
+      tooltip.appendChild(div);
+    }
+
+    highlightEntry(entry);
+  } else {
+    tooltip.style.display = "none";
+    highlightEntry(null);
+  }
 }
 
 function handleMouseMove(e) {
@@ -525,58 +588,12 @@ function handleMouseMove(e) {
     let dy = e.movementY;
     doScroll(-dy);
   } else if (x < canvas.width) {
-    tooltip.style.display = "block";
-    tooltip.textContent = "";
-    tooltip.style.left = `${x + 8}px`;
-    tooltip.style.top = `${y + 8}px`;
-
-    let {
-      trackWidth,
-      minTime,
-      maxTime,
-      tracks,
-      rendererTranslate,
-      rendererScale,
-      lastHoveredRect,
-    } = gState;
-
-    let {track, entry} = getTrackAndEntryByMousePosition(x, y);
-
-    let text = "";
-    text += `Op: ${track.operation}\n`;
-    if (entry) {
-      text += `Path: ${entry.path}\n`;
-      text += `Process ID: ${entry.pid}\n`;
-      text += `Thread ID: ${entry.tid}\n`;
-      if (entry.detail) {
-        let detailLines = entry.detail.split("\n");
-        text += `Detail: ${detailLines.slice(0, MAX_DETAIL_LINES).join("\n        ")}\n`;
-        if (detailLines.length > MAX_DETAIL_LINES) {
-          text += `       (${detailLines.length - MAX_DETAIL_LINES} more entries...)\n`;
-        }
-      }
-      text += `Process Name: ${entry.processName}\n`;
-      text += `Duration: ${((entry.end - entry.start) * 1000).toFixed(3)}ms\n`;
-
-      renderer.maybeMutateRect(lastHoveredRect, 1.0);
-      if (!entry.hiddenBySearch) {
-        renderer.maybeMutateRect(entry.rectHandle, HOVERED_ENTRY_FILL);
-        gState.lastHoveredRect = entry.rectHandle;
-      }
-      renderer.draw();
-    } else if (lastHoveredRect) {
-      renderer.maybeMutateRect(lastHoveredRect,
-                               1.0);
-      lastHoveredRect = null;
-      renderer.draw();
-    }
-
-    let lines = text.split("\n");
-    for (let line of lines) {
-      let div = document.createElement("div");
-      div.textContent = line;
-      tooltip.appendChild(div);
-    }
+    let entry = getEntryByMousePosition(x, y);
+    showEntryTooltip(entry, {x, y});
+  } else if (x - canvas.width < entryCanvas.width && gState.selectedEntry) {
+    let entry = getHoveredReadEntry(gState.selectedEntry.path);
+    highlightEntry(entry);
+    showEntryTooltip(entry, {x, y});
   } else {
     tooltip.style.display = "none";
   }
@@ -614,7 +631,47 @@ function drawTopPathsInfo() {
       text += `${padRight(amount, maxStrLen)}  ${path}\n`;
     }
     readInfo.textContent = text;
+
+    entryRenderer.clearAll();
+    entryRenderer.draw();
   }
+}
+
+function getHoveredReadEntry(path) {
+  let hoveredEntry = null;
+  if (gState) {
+    let {
+      readsByPath,
+      mouseY,
+    } = gState;
+    let reads = readsByPath[path] || [];
+    let minAddress = 0;
+    let maxAddress = 0;
+    for (let i = 0; i < reads.length; i++) {
+      let {readDetail} = reads[i];
+      let {offset, length} = readDetail;
+      let endAddress = offset + length;
+      if (endAddress > maxAddress) {
+        maxAddress = endAddress;
+      }
+    }
+
+    let pixelsPerByte = entryCanvas.height / maxAddress;
+    let minHoveredTime = Number.MAX_VALUE;
+
+    for (let i = 0; i < reads.length; i++) {
+      let {readDetail, entry} = reads[i];
+      let {offset, length} = readDetail;
+      let startPixels = offset * pixelsPerByte;
+      let endPixels = (offset + length) * pixelsPerByte;
+      if (startPixels < mouseY && endPixels > mouseY) {
+        hoveredEntry = entry;
+        break;
+      }
+    }
+  }
+
+  return hoveredEntry;
 }
 
 function drawPathInfo(path) {
@@ -659,7 +716,7 @@ function drawPathInfo(path) {
     readInfo.textContent = "";
     let text = "";
     text += `Read info for ${path}:\n`;
-    text += `Read ${totalReadByPath[path].toLocaleString()} bytes from a range of ${(maxAddress - minAddress).toLocaleString()}\n`;
+    text += `Read ${totalReadByPath[path] ? totalReadByPath[path].toLocaleString() : "unknown"} bytes from a range of ${(maxAddress - minAddress).toLocaleString()}\n`;
     readInfo.textContent = text;
   }
 }
@@ -723,8 +780,8 @@ function handleMouseDown(event) {
     if (event.which == 2 || event.button == 4 ) {
       event.preventDefault();
       gState.middleMouseDown = true;
-    } else {
-      let {track, entry} = getTrackAndEntryByMousePosition(gState.mouseX, gState.mouseY);
+    } else if (gState.mouseX < canvas.width) {
+      let entry = getEntryByMousePosition(gState.mouseX, gState.mouseY);
       if (entry) {
         gState.selectedEntry = entry;
         searchbar.value = "";
