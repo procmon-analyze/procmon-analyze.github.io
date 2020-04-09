@@ -1,4 +1,5 @@
 import {parseCSV} from "./parseCSV.js"
+import {parseDiskify} from "./parseDiskify.js"
 import Renderer from "./renderer.js"
 
 const BACKGROUND_DEPTH = 0.9;
@@ -7,24 +8,31 @@ const FOREGROUND_DEPTH = 0.7;
 const HOVERED_ENTRY_FILL = 0.9;
 const FILTERED_OUT_ENTRY_FILL = 0.7;
 const MAX_DETAIL_LINES = 24;
+const ASSUMED_CLUSTER_SIZE = 4096;
 
 const csvInput = document.getElementById("csvfile");
+const diskifyInput = document.getElementById("diskifyfile");
 const tooltip = document.getElementById("tooltip");
 const searchbar = document.getElementById("searchbar-input");
 const colorBySelect = document.getElementById("color-by-select");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
-const entryCanvas = document.getElementById("entry-canvas");
+const fsmapCanvas = document.getElementById("fsmap-canvas");
+const diskmapCanvas = document.getElementById("diskmap-canvas");
 const readInfo = document.getElementById("read-info");
 
 const renderer = new Renderer(canvas);
-const entryRenderer = new Renderer(entryCanvas);
+const fsmapRenderer = new Renderer(fsmapCanvas);
+const diskmapRenderer = new Renderer(diskmapCanvas);
 
 canvas.width = window.innerWidth * 0.5;
 canvas.height = window.innerHeight - 16;
 
-entryCanvas.width = window.innerWidth * 0.05;
-entryCanvas.height = window.innerHeight - 16;
+fsmapCanvas.width = window.innerWidth * 0.025;
+fsmapCanvas.height = window.innerHeight - 16;
+
+diskmapCanvas.width = window.innerWidth * 0.025;
+diskmapCanvas.height = window.innerHeight - 16;
 
 const VIEWPORT_BUFFER = canvas.height;
 
@@ -99,6 +107,29 @@ function hexToColorArray(color) {
   ];
 }
 
+const red = [.9,.2,.1];
+const blue = [.2,.1,.9];
+const green = [.2,.9,.2];
+function redBlueLerp(x) {
+  let result = new Array(red.length);
+  for (let i = 0; i < red.length; i++) {
+    result[i] = red[i] * x + blue[i] * (1 - x);
+  }
+  return result;
+}
+
+function blueGreenLerp(x) {
+  let result = new Array(blue.length);
+  for (let i = 0; i < blue.length; i++) {
+    result[i] = blue[i] * x + green[i] * (1 - x);
+  }
+  return result;
+}
+
+function gbrLerp(x) {
+  return x < 0.5 ? blueGreenLerp(x * 2) : redBlueLerp(x * 2 - 1);
+}
+
 function darkenColor(color, amount) {
   var colorArray = hexToColorArray(color);
   var darkenFactor = 1 - amount;
@@ -145,7 +176,7 @@ function parseReadDetail(detail) {
   }
 }
 
-async function drawData(data) {
+async function drawData(data, diskify) {
   document.getElementById("chooserWrapper").style.display = "none";
 
   let tracks = [];
@@ -172,7 +203,6 @@ async function drawData(data) {
 
   let totalTimeByOperation = {};
   let readsByPath = {};
-  let totalReadByPath = {};
 
   for (let row of data) {
     let { operation, path, pid, tid, start, duration, detail, processName } = row;
@@ -215,7 +245,7 @@ async function drawData(data) {
 
     if (!entry) {
       if (!track) {
-        track = {operation, entries: [], index: tracks.length};
+        track = {operation, entries: []};
         tracks.push(track);
       }
       entry = {
@@ -235,18 +265,44 @@ async function drawData(data) {
     }
 
     if (operation == "ReadFile" && detail) {
+      let readDetail = parseReadDetail(detail);
+      let readStart = readDetail.offset;
+      let readEnd = readDetail.offset + readDetail.length;
       if (!readsByPath[path]) {
-        readsByPath[path] = [];
-        totalReadByPath[path] = 0;
+        readsByPath[path] = {
+          reads:[],
+          minAddress: readStart,
+          maxAddress: readEnd,
+          totalRead: 0,
+        };
       }
 
-      let readDetail = parseReadDetail(detail);
-      readsByPath[path].push({readDetail, entry, start, end});
-      totalReadByPath[path] += readDetail.length;
+      readsByPath[path].reads.push({readDetail, entry, start, end});
+      if (readStart < readsByPath[path].minAddress) {
+        readsByPath[path].minAddress = readStart;
+      }
+      if (readEnd > readsByPath[path].maxAddress) {
+        readsByPath[path].maxAddress = readEnd;
+      }
+      readsByPath[path].totalRead += readDetail.length;
     }
   }
 
   tracks.sort((lhs, rhs) => totalTimeByOperation[rhs.operation] - totalTimeByOperation[lhs.operation]);
+
+  for (let i = 0; i < tracks.length; i++) {
+    tracks[i].index = i;
+  }
+
+  let maxLcn = 0;
+  for (let [path, entries] of Object.entries(diskify)) {
+    for (let [start, length] of entries) {
+      if (start + length > maxLcn) {
+        maxLcn = start + length;
+      } 
+    }
+  }
+  let diskmapScale = diskmapCanvas.height / maxLcn;
 
   let totalTime = maxTime - minTime;
   let trackWidth = canvas.width / tracks.length;
@@ -258,14 +314,19 @@ async function drawData(data) {
     totalTime,
     trackWidth,
     rendererScale,
+    diskmapScale,
     readsByPath,
-    totalReadByPath,
+    diskify,
+    maxLcn,
+    diskmapTranslate: 0,
     rendererTranslate: 0,
     mouseX: 0,
     mouseY: 0,
     timelineIndicators: [],
+    lcnReads: [],
     lastHoveredRect: null,
     selectedEntry: null,
+    activePath: null,
   };
 
   renderer.scale(trackWidth, rendererScale);
@@ -277,6 +338,7 @@ async function drawData(data) {
   renderer.draw();
 
   drawTopPathsInfo();
+  scheduleRedrawDiskmap();
 }
 
 function drawBackground() {
@@ -407,12 +469,27 @@ async function readFileContents() {
       };
     });
 
+    let diskifyData = null;
+    if (diskifyInput.files[0]) {
+      reader.readAsText(diskifyInput.files[0], "UTF-8");
+      let diskifyText = await new Promise((resolve, reject) => {
+        reader.onload = e => {
+          resolve(e.target.result);
+        };
+        reader.onerror = e => {
+          reject("error reading file");
+        };
+      });
+
+      diskifyData = parseDiskify(diskifyText);
+    }
+
     let data = parseCSV(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
       acc[headerMap[key]] = val;
       return acc;
     }, {}));
 
-    await drawData(data);
+    await drawData(data, diskifyData);
   }
 };
 
@@ -437,6 +514,23 @@ function doScroll(dy) {
   renderer.draw();
   scheduleTranslateTimeline();
   scheduleRedraw();
+}
+
+function doDiskmapScroll(dy) {
+  let {
+    maxLcn,
+    diskmapScale,
+    diskmapTranslate,
+    mouseX,
+    mouseY,
+  } = gState;
+
+  let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
+  let newTranslate = diskmapTranslate - dy / diskmapScale;
+  gState.diskmapTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns), newTranslate));
+
+  diskmapRenderer.translate(0, gState.diskmapTranslate);
+  diskmapRenderer.draw();
 }
 
 function doZoom(scaleFactor) {
@@ -471,7 +565,31 @@ function doZoom(scaleFactor) {
   scheduleRedraw();
 }
 
-function getEntryByMousePosition(x, y) {
+function doDiskmapZoom(scaleFactor) {
+  let {
+    maxLcn,
+    diskmapScale,
+    diskmapTranslate,
+    mouseX,
+    mouseY
+  } = gState;
+
+  let windowTopInPixels = -diskmapTranslate * diskmapScale;
+  let windowCenterInPixels = windowTopInPixels + diskmapCanvas.height / 2;
+  let mousePositionAbsolute = windowTopInPixels + mouseY;
+  let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
+  let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
+
+  let minScale = diskmapCanvas.height / maxLcn;
+  gState.diskmapScale = Math.max(minScale, gState.diskmapScale * scaleFactor);
+  let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
+  gState.diskmapTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns),
+                                                 -newWindowTopInPixels / (diskmapScale * scaleFactor)));
+
+  scheduleRedrawDiskmap();
+}
+
+function getHoveredEntry() {
   let {
     trackWidth,
     minTime,
@@ -480,15 +598,17 @@ function getEntryByMousePosition(x, y) {
     rendererTranslate,
     rendererScale,
     lastHoveredRect,
+    mouseX,
+    mouseY,
   } = gState;
 
   let track = null;
   let hoveredEntry = null;
-  let trackIndex = Math.floor(x / trackWidth);
+  let trackIndex = Math.floor(mouseX / trackWidth);
   if (trackIndex < tracks.length) {
     track = tracks[trackIndex];
 
-    let time = minTime + y / rendererScale - rendererTranslate;
+    let time = minTime + mouseY / rendererScale - rendererTranslate;
 
     let minDistance = 0.001; // 1 millisecond minimum distance
     for (let entry of track.entries) {
@@ -514,7 +634,7 @@ function getEntryByMousePosition(x, y) {
 }
 
 function highlightEntry(entry) {
-  if (entry && entry.rectHandle != gState.lastHoveredRect) {
+  if ((entry && entry.rectHandle) != gState.lastHoveredRect) {
     renderer.maybeMutateRect(gState.lastHoveredRect, 1.0);
   }
   if (entry && !entry.hiddenBySearch) {
@@ -526,26 +646,34 @@ function highlightEntry(entry) {
   renderer.draw();
 }
 
-function showEntryTooltip(entry, position) {
-  let {x, y} = position;
+function showEntryTooltip(entry, position, header = null) {
+  let {
+    trackWidth,
+    minTime,
+    maxTime,
+    tracks,
+    rendererTranslate,
+    rendererScale,
+    lastHoveredRect,
+  } = gState;
+
+  let x = 0;
+  let y = 0;
+  if (position) {
+    x = position.x + 8;
+    y = position.y + 8;
+  } else if (entry) {
+    x = (entry.track.index + 1) * trackWidth + 4;
+    y = (entry.start - minTime - rendererTranslate) * rendererScale;
+  }
+
   if (entry) {
+    console.log(entry.track.index, x, y, rendererScale);
     let track = entry.track;
     tooltip.style.display = "block";
     tooltip.textContent = "";
-    tooltip.style.left = `${x + 8}px`;
-    tooltip.style.top = `${y + 8}px`;
 
-    let {
-      trackWidth,
-      minTime,
-      maxTime,
-      tracks,
-      rendererTranslate,
-      rendererScale,
-      lastHoveredRect,
-    } = gState;
-
-    let text = "";
+    let text = header ? `${header}\n` : "";
     text += `Op: ${entry ? entry.operation : track.operation}\n`;
     text += `Path: ${entry.path}\n`;
     text += `Process ID: ${entry.pid}\n`;
@@ -567,6 +695,21 @@ function showEntryTooltip(entry, position) {
       tooltip.appendChild(div);
     }
 
+    let left = x;
+    let top = y;
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+
+    let tooltipRect = tooltip.getBoundingClientRect();
+    if (tooltipRect.bottom > window.innerHeight - 4) {
+      top -= tooltipRect.bottom - window.innerHeight + 4;
+      tooltip.style.top = `${top}px`;
+    }
+    if (tooltipRect.right > window.innerWidth - 4) {
+      left -= tooltipRect.right - window.innerWidth + 4;
+      tooltip.style.left = `${left}px`;
+    }
+
     highlightEntry(entry);
   } else {
     tooltip.style.display = "none";
@@ -584,16 +727,26 @@ function handleMouseMove(e) {
   gState.mouseX = x;
   gState.mouseY = y;
 
-  if (gState.middleMouseDown) {
+  if (gState.middleMouseDownFor) {
     let dy = e.movementY;
-    doScroll(-dy);
+    let isForMainCanvas = gState.middleMouseDownFor == "main";
+    let isForDiskmap = gState.middleMouseDownFor == "diskmap";
+    if (isForMainCanvas) {
+      doScroll(-dy);
+    } else if (isForDiskmap) {
+      doDiskmapScroll(-dy);
+    }
   } else if (x < canvas.width) {
-    let entry = getEntryByMousePosition(x, y);
+    let entry = getHoveredEntry();
     showEntryTooltip(entry, {x, y});
-  } else if (x - canvas.width < entryCanvas.width && gState.selectedEntry) {
-    let entry = getHoveredReadEntry(gState.selectedEntry.path);
+  } else if (x - canvas.width < fsmapCanvas.width && gState.selectedEntry) {
+    let entry = getHoveredReadEntry();
     highlightEntry(entry);
-    showEntryTooltip(entry, {x, y});
+    showEntryTooltip(entry); //, "Map of File reads (top is beginning of file, bottom is end, green are early reads, red are late)");
+  } else if (x - canvas.width - fsmapCanvas.width < diskmapCanvas.width) {
+    let entry = getHoveredDiskmapEntry();
+    highlightEntry(entry);
+    showEntryTooltip(entry); //, "Map of File reads by physical location on disk (green are early reads, red are late)");
   } else {
     tooltip.style.display = "none";
   }
@@ -604,10 +757,9 @@ function drawTopPathsInfo() {
     let {
       totalTime,
       readsByPath,
-      totalReadByPath,
     } = gState;
 
-    let totalRead = Object.entries(totalReadByPath);
+    let totalRead = Object.entries(readsByPath).map(r => ([r[0], r[1].totalRead]));
     totalRead.sort((lhs, rhs) => rhs[1] - lhs[1]);
 
     function padRight(str, length) {
@@ -632,41 +784,39 @@ function drawTopPathsInfo() {
     }
     readInfo.textContent = text;
 
-    entryRenderer.clearAll();
-    entryRenderer.draw();
+    fsmapRenderer.clearAll();
+    fsmapRenderer.draw();
   }
 }
 
-function getHoveredReadEntry(path) {
+function getHoveredReadEntry() {
   let hoveredEntry = null;
   if (gState) {
     let {
+      activePath,
       readsByPath,
       mouseY,
     } = gState;
-    let reads = readsByPath[path] || [];
-    let minAddress = 0;
-    let maxAddress = 0;
-    for (let i = 0; i < reads.length; i++) {
-      let {readDetail} = reads[i];
-      let {offset, length} = readDetail;
-      let endAddress = offset + length;
-      if (endAddress > maxAddress) {
-        maxAddress = endAddress;
-      }
-    }
 
-    let pixelsPerByte = entryCanvas.height / maxAddress;
-    let minHoveredTime = Number.MAX_VALUE;
+    if (readsByPath[activePath]) {
+      let {
+        reads,
+        minAddress,
+        maxAddress,
+      } = readsByPath[activePath];
 
-    for (let i = 0; i < reads.length; i++) {
-      let {readDetail, entry} = reads[i];
-      let {offset, length} = readDetail;
-      let startPixels = offset * pixelsPerByte;
-      let endPixels = (offset + length) * pixelsPerByte;
-      if (startPixels < mouseY && endPixels > mouseY) {
-        hoveredEntry = entry;
-        break;
+      let pixelsPerByte = fsmapCanvas.height / maxAddress;
+      let minHoveredTime = Number.MAX_VALUE;
+
+      for (let i = 0; i < reads.length; i++) {
+        let {readDetail, entry} = reads[i];
+        let {offset, length} = readDetail;
+        let startPixels = offset * pixelsPerByte;
+        let endPixels = (offset + length) * pixelsPerByte;
+        if (startPixels < mouseY && endPixels > mouseY) {
+          hoveredEntry = entry;
+          break;
+        }
       }
     }
   }
@@ -674,51 +824,199 @@ function getHoveredReadEntry(path) {
   return hoveredEntry;
 }
 
-function drawPathInfo(path) {
+function drawPathInfo() {
   if (gState) {
     let {
+      activePath,
       totalTime,
       readsByPath,
       totalReadByPath,
+      diskify,
+      maxLcn,
     } = gState;
 
-    entryRenderer.clearAll();
+    fsmapRenderer.clearAll();
 
-    let reads = readsByPath[path] || [];
-    let minAddress = 0;
-    let maxAddress = 0;
-    let red = [.9,.2,.1];
-    let blue = [.2,.1,.9];
-    let redBlueLerp = (x) => {
-      let result = new Array(red.length);
-      for (let i = 0; i < red.length; i++) {
-        result[i] = red[i] * x + blue[i] * (1 - x);
-      }
-      return result;
-    };
+    if (readsByPath[activePath]) {
+      let {
+        reads,
+        minAddress,
+        maxAddress,
+        totalRead,
+      } = readsByPath[activePath];
 
+      for (let i = 0; i < reads.length; i++) {
+        let {readDetail} = reads[i];
+        let {offset, length} = readDetail;
+        let endAddress = offset + length;
 
-    for (let i = 0; i < reads.length; i++) {
-      let {readDetail} = reads[i];
-      let {offset, length} = readDetail;
-      let endAddress = offset + length;
-      if (endAddress > maxAddress) {
-        maxAddress = endAddress;
+        let rgb = gbrLerp(i / reads.length);
+        fsmapRenderer.pushRect(colorArrayToHex(rgb), 0, offset, 1, length, (i / reads.length) / 2 + 0.2);
       }
 
-      let rgb = redBlueLerp(i / reads.length);
-      entryRenderer.pushRect(colorArrayToHex(rgb), 0, offset, 1, length, (i / reads.length) / 2 + 0.2);
+      fsmapRenderer.scale(fsmapCanvas.width, fsmapCanvas.height / maxAddress);
+      fsmapRenderer.draw();
+
+      readInfo.textContent = "";
+      let text = "";
+      text += `Read info for ${activePath}:\n`;
+      text += `Read ${(totalRead / 1000000).toLocaleString()} MB from a range of ${((maxAddress - minAddress) / 1000000).toLocaleString()} MB\n`;
+
+      if (diskify && diskify[activePath]) {
+        text += `Physical locations on disk:\n`;
+        for (let [start, length] of diskify[activePath]) {
+          text += `  clusters ${start.toLocaleString()} through ${(start + length).toLocaleString()} (length: ${(length * 4096 / 1000000).toLocaleString()} MB)\n`;
+        }
+      }
+
+      readInfo.textContent = text;
+    } else {
+      readInfo.textContent = "";
     }
-
-    entryRenderer.scale(entryCanvas.width, entryCanvas.height / maxAddress);
-    entryRenderer.draw();
-
-    readInfo.textContent = "";
-    let text = "";
-    text += `Read info for ${path}:\n`;
-    text += `Read ${totalReadByPath[path] ? totalReadByPath[path].toLocaleString() : "unknown"} bytes from a range of ${(maxAddress - minAddress).toLocaleString()}\n`;
-    readInfo.textContent = text;
   }
+}
+
+function vcnRangeToLcnRanges(diskifyEntries, startVcn, vcnLength) {
+  let curVcn = 0;
+  let lcnRanges = [];
+  for (let i = 0; i < diskifyEntries.length; i++) {
+    if (vcnLength <= 0) {
+      break;
+    }
+    let [startLcn, lcnLength] = diskifyEntries[i];
+    if (startVcn >= curVcn && startVcn < curVcn + lcnLength) {
+      let offset = startVcn - curVcn;
+      let readStartLcn = offset + startLcn;
+      let readLength = lcnLength - offset;
+
+      if (vcnLength < readLength) {
+        readLength = vcnLength;
+      }
+      vcnLength -= readLength;
+      startVcn += readLength;
+      lcnRanges.push([readStartLcn, readLength]);
+    }
+    curVcn += lcnLength;
+  }
+
+  return lcnRanges;
+}
+
+function drawDiskmap() {
+  let {
+    activePath,
+    diskify,
+    diskmapScale,
+    diskmapTranslate,
+    readsByPath,
+  } = gState;
+  let lcnsPerPixel = 1 / diskmapScale;
+
+  diskmapRenderer.clearAll();
+  let drawLcns = (start, length, color, z) => {
+    // -1 indicates something that is virtually stored in some way - an example is
+    // transparent filesystem compression. We don't currently have a good way of
+    // visualizing this, so I just leave it off.
+    if (start != -1) {
+      diskmapRenderer.pushRect(color, 0, start, 1, Math.max(lcnsPerPixel, length), z);
+    }
+  };
+
+
+  let lcnReads = [];
+  if (activePath) {
+    if (readsByPath[activePath]) {
+      let { reads } = readsByPath[activePath];
+      let diskifyForPath = diskify[activePath];
+      for (let i = 0; i < reads.length; i++) {
+        let {readDetail, entry} = reads[i];
+        let {offset, length} = readDetail;
+        let startVcn = Math.floor(offset / ASSUMED_CLUSTER_SIZE);
+        let vcnLength = Math.ceil(length / ASSUMED_CLUSTER_SIZE);
+        lcnReads.push({
+          entry,
+          lcnRanges: vcnRangeToLcnRanges(diskifyForPath, startVcn, vcnLength),
+        });
+      }
+    }
+  } else {
+    for (let [path, {reads}] of Object.entries(readsByPath)) {
+      let diskifyForPath = diskify[path];
+      for (let i = 0; i < reads.length; i++) {
+        let {readDetail, entry} = reads[i];
+        let {offset, length} = readDetail;
+        let startVcn = Math.floor(offset / ASSUMED_CLUSTER_SIZE);
+        let vcnLength = Math.ceil(length / ASSUMED_CLUSTER_SIZE);
+        lcnReads.push({
+          entry,
+          lcnRanges: vcnRangeToLcnRanges(diskifyForPath, startVcn, vcnLength),
+        });
+      }
+    }
+  }
+
+  let totalLength = 0;
+  for (let {lcnRanges} of lcnReads) {
+    for (let [start, length] of lcnRanges) {
+      totalLength += length;
+    }
+  }
+
+  let currentTotalLength = 0;
+  let i = 0;
+  for (let {lcnRanges} of lcnReads) {
+    for (let [start, length] of lcnRanges) {
+      currentTotalLength += length;
+      let rgb = gbrLerp(currentTotalLength / totalLength);
+      drawLcns(start, length, colorArrayToHex(rgb), (i / lcnReads.length) / 2 + 0.2);
+      i++;
+    }
+  }
+
+  gState.lcnReads = lcnReads;
+  diskmapRenderer.translate(0, diskmapTranslate);
+  diskmapRenderer.scale(diskmapCanvas.width, diskmapScale);
+  diskmapRenderer.draw();
+}
+
+function getHoveredDiskmapEntry() {
+  let {
+    mouseY,
+    lcnReads,
+    diskmapScale,
+    diskmapTranslate,
+  } = gState;
+
+  let lcnsPerPixel = 1 / diskmapScale;
+  let mouseLcn = mouseY * lcnsPerPixel - diskmapTranslate;
+  let minDistance = lcnsPerPixel;
+  let foundExact = false;
+  let hoveredEntry = null;
+  for (let {lcnRanges, entry} of lcnReads) {
+    if (foundExact) {
+      break;
+    }
+    for (let [start, length] of lcnRanges) {
+      let end = start + length;
+      let distance = 0;
+      if (start < mouseLcn && end > mouseLcn) {
+        hoveredEntry = entry;
+        foundExact = true;
+        break;
+      } else if (start > mouseLcn) {
+        distance = start - mouseLcn;
+      } else if (end < mouseLcn) {
+        distance = mouseLcn - end;
+      }
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        hoveredEntry = entry;
+      }
+    }
+  }
+
+  return hoveredEntry;
 }
 
 let drawForegroundTimeout = null;
@@ -735,6 +1033,24 @@ function scheduleRedraw() {
     return;
   }
   drawForegroundTimeout = setTimeout(doRedraw, 250);
+}
+
+let drawDiskmapTimeout = null;
+function doRedrawDiskmap() {
+  drawDiskmap();
+  drawDiskmapTimeout = null;
+}
+
+function scheduleRedrawDiskmap() {
+  diskmapRenderer.translate(0, gState.diskmapTranslate);
+  diskmapRenderer.scale(diskmapCanvas.width, gState.diskmapScale);
+  diskmapRenderer.draw();
+
+  if (drawDiskmapTimeout) {
+    return;
+  }
+
+  drawDiskmapTimeout = setTimeout(doRedrawDiskmap, 250);
 }
 
 let translateTimelineTimeout = null;
@@ -754,10 +1070,16 @@ function scheduleTranslateTimeline() {
 let isTrackpadScroll = false;
 function handleMouseWheel(event) {
   if (gState) {
+    let isForMainCanvas = gState.mouseX < canvas.width;
+    let diskmapOffset = canvas.width + fsmapCanvas.width;
+    let isForDiskmap = gState.mouseX > diskmapOffset &&
+        gState.mouseX < diskmapOffset + diskmapCanvas.width;
     event.preventDefault();
+    let zoom = isForMainCanvas ? doZoom : isForDiskmap ? doDiskmapZoom : () => {};
+    let scroll = isForMainCanvas ? doScroll : isForDiskmap ? doDiskmapScroll : () => {};
     if (event.ctrlKey) {
       let scaleFactor = 1 + event.deltaY * -0.05;
-      doZoom(scaleFactor);
+      zoom(scaleFactor);
     } else {
       // This is an attempt at detecting trackpads. Mouse wheel scrolling
       // usually has detents set up which cause scrolls larger than 1.
@@ -770,7 +1092,7 @@ function handleMouseWheel(event) {
       if (!isTrackpadScroll) {
         dy *= 10;
       }
-      doScroll(dy);
+      scroll(dy);
     }
   }
 }
@@ -778,18 +1100,28 @@ function handleMouseWheel(event) {
 function handleMouseDown(event) {
   if (gState) {
     if (event.which == 2 || event.button == 4 ) {
-      event.preventDefault();
-      gState.middleMouseDown = true;
+      let isForMainCanvas = gState.mouseX < canvas.width;
+      let diskmapOffset = canvas.width + fsmapCanvas.width;
+      let isForDiskmap = gState.mouseX > diskmapOffset &&
+          gState.mouseX < diskmapOffset + diskmapCanvas.width;
+      if (isForMainCanvas || isForDiskmap) {
+        event.preventDefault();
+      }
+      gState.middleMouseDownFor = isForMainCanvas ? "main" : isForDiskmap ? "diskmap" : null;
     } else if (gState.mouseX < canvas.width) {
-      let entry = getEntryByMousePosition(gState.mouseX, gState.mouseY);
+      let entry = getHoveredEntry();
       if (entry) {
         gState.selectedEntry = entry;
         searchbar.value = "";
+        gState.activePath = entry.path;
         doRedraw();
-        drawPathInfo(entry.path);
+        drawPathInfo();
+        scheduleRedrawDiskmap();
       } else if (gState.selectedEntry) {
         gState.selectedEntry = null;
+        gState.activePath = null;
         drawTopPathsInfo();
+        scheduleRedrawDiskmap();
         doRedraw();
       }
     }
@@ -800,7 +1132,7 @@ function handleMouseUp(event) {
   if (gState) {
     if (event.which == 2 || event.button == 4 ) {
       event.preventDefault();
-      gState.middleMouseDown = false;
+      gState.middleMouseDownFor = null;
     } else {
       
     }
@@ -834,14 +1166,15 @@ function handleColorByChange(event) {
 
 csvInput.addEventListener("change", readFileContents);
 document.addEventListener("mousemove", handleMouseMove);
-canvas.addEventListener("wheel", handleMouseWheel, {passive: false});
+document.addEventListener("wheel", handleMouseWheel, {passive: false});
 document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
 colorBySelect.addEventListener("change", handleColorByChange);
 
 renderer.startup();
-entryRenderer.startup();
+fsmapRenderer.startup();
+diskmapRenderer.startup();
 
 if (window.location.href.indexOf("localhost") != -1) {
   readFileContents();

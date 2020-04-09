@@ -8,14 +8,18 @@
 <body>
   <div id="chooserWrapper">
     <label for="csvfile">Choose a Procmon CSV:</label>
-
     <input type="file"
            id="csvfile" name="csvfile"
            accept=".csv">
+    <label for="csvfile">(optional) Choose a diskify map:</label>
+    <input type="file"
+           id="diskifyfile" name="diskifyfile"
+           accept=".diskify">
   </div>
 
   <canvas id="canvas"></canvas>
-  <canvas id="entry-canvas"></canvas>
+  <canvas id="fsmap-canvas"></canvas>
+  <canvas id="diskmap-canvas"></canvas>
   <pre id="read-info"></pre>
 
   <div id="timeline"></div>
