@@ -295,11 +295,13 @@ async function drawData(data, diskify) {
   }
 
   let maxLcn = 0;
-  for (let [path, entries] of Object.entries(diskify)) {
-    for (let [start, length] of entries) {
-      if (start + length > maxLcn) {
-        maxLcn = start + length;
-      } 
+  if (diskify) {
+    for (let [path, entries] of Object.entries(diskify)) {
+      for (let [start, length] of entries) {
+        if (start + length > maxLcn) {
+          maxLcn = start + length;
+        } 
+      }
     }
   }
   let diskmapScale = diskmapCanvas.height / maxLcn;
@@ -668,7 +670,6 @@ function showEntryTooltip(entry, position, header = null) {
   }
 
   if (entry) {
-    console.log(entry.track.index, x, y, rendererScale);
     let track = entry.track;
     tooltip.style.display = "block";
     tooltip.textContent = "";
@@ -910,6 +911,9 @@ function drawDiskmap() {
     diskmapTranslate,
     readsByPath,
   } = gState;
+  if (!diskify) {
+    return;
+  }
   let lcnsPerPixel = 1 / diskmapScale;
 
   diskmapRenderer.clearAll();
@@ -985,7 +989,11 @@ function getHoveredDiskmapEntry() {
     lcnReads,
     diskmapScale,
     diskmapTranslate,
+    diskify,
   } = gState;
+  if (!diskify) {
+    return null;
+  }
 
   let lcnsPerPixel = 1 / diskmapScale;
   let mouseLcn = mouseY * lcnsPerPixel - diskmapTranslate;
@@ -1042,6 +1050,9 @@ function doRedrawDiskmap() {
 }
 
 function scheduleRedrawDiskmap() {
+  if (!gState.diskify) {
+    return;
+  }
   diskmapRenderer.translate(0, gState.diskmapTranslate);
   diskmapRenderer.scale(diskmapCanvas.width, gState.diskmapScale);
   diskmapRenderer.draw();
