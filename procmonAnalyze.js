@@ -316,12 +316,16 @@ async function drawData(data, diskify) {
     totalTime,
     trackWidth,
     rendererScale,
+    targetRendererScale: rendererScale,
     diskmapScale,
+    targetDiskmapScale: diskmapScale,
     readsByPath,
     diskify,
     maxLcn,
     diskmapTranslate: 0,
+    targetDiskmapTranslate: 0,
     rendererTranslate: 0,
+    targetRendererTranslate: 0,
     mouseX: 0,
     mouseY: 0,
     timelineIndicators: [],
@@ -495,6 +499,54 @@ async function readFileContents() {
   }
 };
 
+function smoothScroll(targetTranslate) {
+  smoothValueChange("translate",
+                    gState.rendererTranslate,
+                    targetTranslate,
+                    5000 / gState.rendererScale,
+                    (translate) => {
+    gState.rendererTranslate = translate;
+    renderer.translate(0, gState.rendererTranslate);
+    renderer.draw();
+    scheduleTranslateTimeline();
+  });
+}
+
+function smoothScale(targetScale) {
+  gState.targetRendererScale = targetScale;
+  smoothValueChange("scale",
+                    gState.rendererScale,
+                    targetScale,
+                    100 * gState.rendererScale,
+                    (scale) => {
+    let {
+      trackWidth,
+      minTime,
+      maxTime,
+      rendererScale,
+      rendererTranslate,
+      mouseY
+    } = gState;
+
+    let scaleFactor = scale / rendererScale;
+    let windowTopInPixels = -rendererTranslate * rendererScale;
+    let mousePositionAbsolute = windowTopInPixels + mouseY;
+    let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
+    let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
+
+    let totalTime = maxTime - minTime;
+    let windowHeightInSeconds = canvas.height / rendererScale;
+    let newTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds),
+                                            -newWindowTopInPixels / scale));
+    gState.rendererScale = scale;
+    renderer.scale(gState.trackWidth, gState.rendererScale);
+    gState.rendererTranslate = newTranslate;
+    gState.targetRendererTranslate = newTranslate;
+    renderer.translate(0, gState.rendererTranslate);
+    renderer.draw();
+  });
+}
+
 function doScroll(dy) {
   let {
     trackWidth,
@@ -502,37 +554,44 @@ function doScroll(dy) {
     maxTime,
     rendererScale,
     rendererTranslate,
-    tracks,
-    mouseX,
+    targetRendererTranslate,
     mouseY,
   } = gState;
 
   let totalTime = maxTime - minTime;
   let windowHeightInSeconds = canvas.height / rendererScale;
-  let newTranslate = rendererTranslate - dy / rendererScale;
-  gState.rendererTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds), newTranslate));
+  let newTranslate = targetRendererTranslate - dy / rendererScale;
+  newTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds), newTranslate));
 
-  renderer.translate(0, gState.rendererTranslate);
-  renderer.draw();
-  scheduleTranslateTimeline();
+  gState.targetRendererTranslate = newTranslate;
+  smoothScroll(newTranslate);
   scheduleRedraw();
+}
+
+function smoothDiskmapScroll(targetTranslate) {
+  smoothValueChange("diskmapTranslate",
+                    gState.diskmapTranslate,
+                    targetTranslate,
+                    5000 / gState.diskmapScale,
+                    (translate) => {
+    gState.diskmapTranslate = translate;
+    diskmapRenderer.translate(0, gState.diskmapTranslate);
+    diskmapRenderer.draw();
+  });
 }
 
 function doDiskmapScroll(dy) {
   let {
     maxLcn,
     diskmapScale,
-    diskmapTranslate,
-    mouseX,
+    targetDiskmapTranslate,
     mouseY,
   } = gState;
 
   let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
-  let newTranslate = diskmapTranslate - dy / diskmapScale;
-  gState.diskmapTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns), newTranslate));
-
-  diskmapRenderer.translate(0, gState.diskmapTranslate);
-  diskmapRenderer.draw();
+  let newTranslate = targetDiskmapTranslate - dy / diskmapScale;
+  gState.targetDiskmapTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns), newTranslate));
+  smoothDiskmapScroll(gState.targetDiskmapTranslate);
 }
 
 function doZoom(scaleFactor) {
@@ -540,54 +599,77 @@ function doZoom(scaleFactor) {
     trackWidth,
     minTime,
     maxTime,
-    rendererScale,
+    targetRendererScale,
     rendererTranslate,
-    tracks,
-    mouseX,
     mouseY
   } = gState;
 
-  let windowTopInPixels = -rendererTranslate * rendererScale;
-  let windowCenterInPixels = windowTopInPixels + canvas.height / 2;
+  let windowTopInPixels = -rendererTranslate * targetRendererScale;
   let mousePositionAbsolute = windowTopInPixels + mouseY;
   let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
   let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
 
   let minScale = canvas.height / (maxTime - minTime);
-  gState.rendererScale = Math.max(minScale, gState.rendererScale * scaleFactor);
-  let totalTime = maxTime - minTime;
-  let windowHeightInSeconds = canvas.height / rendererScale;
-  gState.rendererTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds),
-                                                  -newWindowTopInPixels / (rendererScale * scaleFactor)));
+  let newScale = Math.max(minScale, gState.targetRendererScale * scaleFactor);
 
-  renderer.scale(trackWidth, gState.rendererScale);
-  renderer.translate(0, gState.rendererTranslate);
-  renderer.draw();
-  scheduleTranslateTimeline();
+  smoothScale(newScale);
   scheduleRedraw();
+}
+
+function smoothDiskmapScale(targetScale) {
+  gState.targetDiskmapScale = targetScale;
+  smoothValueChange("diskmapScale",
+                    gState.diskmapScale,
+                    targetScale,
+                    100 * gState.diskmapScale,
+                    (scale) => {
+    let {
+      maxLcn,
+      diskmapScale,
+      diskmapTranslate,
+      mouseY
+    } = gState;
+
+    let scaleFactor = scale / diskmapScale;
+
+    let windowTopInPixels = -diskmapTranslate * diskmapScale;
+    let windowCenterInPixels = windowTopInPixels + diskmapCanvas.height / 2;
+    let mousePositionAbsolute = windowTopInPixels + mouseY;
+    let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
+    let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
+
+    let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
+    let newTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns),
+                                            -newWindowTopInPixels / scale));
+
+    gState.diskmapScale = scale;
+    gState.diskmapTranslate = newTranslate;
+    gState.targetDiskmapTranslate = newTranslate;
+
+    diskmapRenderer.translate(0, gState.diskmapTranslate);
+    diskmapRenderer.scale(diskmapCanvas.width, gState.diskmapScale);
+    diskmapRenderer.draw();
+  });
 }
 
 function doDiskmapZoom(scaleFactor) {
   let {
     maxLcn,
-    diskmapScale,
+    targetDiskmapScale,
     diskmapTranslate,
-    mouseX,
     mouseY
   } = gState;
 
-  let windowTopInPixels = -diskmapTranslate * diskmapScale;
+  let windowTopInPixels = -diskmapTranslate * targetDiskmapScale;
   let windowCenterInPixels = windowTopInPixels + diskmapCanvas.height / 2;
   let mousePositionAbsolute = windowTopInPixels + mouseY;
   let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
   let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
 
   let minScale = diskmapCanvas.height / maxLcn;
-  gState.diskmapScale = Math.max(minScale, gState.diskmapScale * scaleFactor);
-  let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
-  gState.diskmapTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns),
-                                                 -newWindowTopInPixels / (diskmapScale * scaleFactor)));
+  let newScale = Math.max(minScale, gState.targetDiskmapScale * scaleFactor);
 
+  smoothDiskmapScale(newScale);
   scheduleRedrawDiskmap();
 }
 
@@ -1027,6 +1109,82 @@ function getHoveredDiskmapEntry() {
   return hoveredEntry;
 }
 
+let frameRequested = false;
+let smoothValueStates = {};
+let lastFrame = null;
+
+function smoothValueChangeCb() {
+  frameRequested = false;
+  let dt = Math.min(performance.now() - lastFrame, 1 / 30);
+  lastFrame = performance.now();
+
+  let allTargetsMet = true;
+  for (let [key, state] of Object.entries(smoothValueStates)) {
+    let {
+      currentValue,
+      target,
+      acceleration,
+      callback,
+      dp,
+    } = state;
+
+    let delta = target - currentValue;
+    if (Math.sign(dp) != Math.sign(delta)) {
+      dp = 0;
+    }
+
+    let deltaAbs = Math.abs(delta);
+    let speed = Math.abs(dp);
+    let slowDownThreshold = speed * speed * 0.5 / acceleration;
+
+    let ddp = acceleration * Math.sign(delta);
+    if (deltaAbs <= slowDownThreshold) {
+      ddp = acceleration * -Math.sign(delta);
+    }
+    dp += ddp * dt;
+    let nextValue = currentValue + dp * dt;
+
+    let targetMet = false;
+    if (currentValue <= target && nextValue > target ||
+        currentValue >= target && nextValue < target) {
+      nextValue = target;
+      dp = 0;
+      targetMet = true;
+    } else {
+      allTargetsMet = false;
+    }
+    state.currentValue = nextValue;
+    state.dp = dp;
+
+    callback(state.currentValue);
+
+    if (targetMet) {
+      delete smoothValueStates[key];
+    }
+  }
+
+  if (!allTargetsMet) {
+    requestAnimationFrame(smoothValueChangeCb);
+    frameRequested = true;
+  }
+}
+
+function smoothValueChange(key, currentValue, target, acceleration, callback) {
+  if (!smoothValueStates[key]) {
+    smoothValueStates[key] = {dp: 0};
+  }
+  smoothValueStates[key].currentValue = currentValue;
+  smoothValueStates[key].target = target;
+  smoothValueStates[key].acceleration = acceleration;
+  smoothValueStates[key].callback = callback;
+
+  if (!frameRequested) {
+    requestAnimationFrame(smoothValueChangeCb);
+    frameRequested = true;
+    lastFrame = performance.now();
+  }
+}
+
 let drawForegroundTimeout = null;
 function doRedraw() {
   renderer.clearAll();
@@ -1053,9 +1211,6 @@ function scheduleRedrawDiskmap() {
   if (!gState.diskify) {
     return;
   }
-  diskmapRenderer.translate(0, gState.diskmapTranslate);
-  diskmapRenderer.scale(diskmapCanvas.width, gState.diskmapScale);
-  diskmapRenderer.draw();
 
   if (drawDiskmapTimeout) {
     return;
@@ -1078,6 +1233,16 @@ function scheduleTranslateTimeline() {
   }, 10);
 }
 
+function normalizeMouseWheelDelta(deltaY) {
+  if (deltaY > 0) {
+    return 1;
+  } else if (deltaY < 0) {
+    return -1;
+  } else {
+    return 0;
+  }
+}
+
 let isTrackpadScroll = false;
 function handleMouseWheel(event) {
   if (gState) {
@@ -1085,11 +1250,13 @@ function handleMouseWheel(event) {
     let diskmapOffset = canvas.width + fsmapCanvas.width;
     let isForDiskmap = gState.mouseX > diskmapOffset &&
         gState.mouseX < diskmapOffset + diskmapCanvas.width;
-    event.preventDefault();
+    if (isForMainCanvas || isForDiskmap) {
+      event.preventDefault();
+    }
     let zoom = isForMainCanvas ? doZoom : isForDiskmap ? doDiskmapZoom : () => {};
     let scroll = isForMainCanvas ? doScroll : isForDiskmap ? doDiskmapScroll : () => {};
     if (event.ctrlKey) {
-      let scaleFactor = 1 + event.deltaY * -0.05;
+      let scaleFactor = 1 + normalizeMouseWheelDelta(event.deltaY) * -0.5;
       zoom(scaleFactor);
     } else {
       // This is an attempt at detecting trackpads. Mouse wheel scrolling
@@ -1099,9 +1266,11 @@ function handleMouseWheel(event) {
       if (event.deltaY == 1 || event.deltaY == -1) {
         isTrackpadScroll = true;
       }
-      let dy = event.deltaY;
-      if (!isTrackpadScroll) {
-        dy *= 10;
+      let dy;
+      if (isTrackpadScroll) {
+        dy = event.deltaY;
+      } else {
+        dy = normalizeMouseWheelDelta(event.deltaY) * 100;
       }
       scroll(dy);
     }

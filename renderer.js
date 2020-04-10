@@ -136,6 +136,7 @@ function Renderer(canvas) {
     result.vertexBuffer = gl.createBuffer();
     result.vertexCount = 0;
     result.hasAlpha = false;
+    result.isDirty = true;
     gl.bindBuffer(gl.ARRAY_BUFFER, result.vertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, result.vertexArray, gl.STATIC_DRAW);
     return result;
@@ -155,6 +156,7 @@ function Renderer(canvas) {
   function maybeMutateRect(handle, fill) {
     if (handle && handle.generationId == generationId) {
       let rectsObj = rectsByColor[handle.cssColor];
+      rectsObj.isDirty = true;
       if (fill != 1.0) {
         rectsObj.hasAlpha = true;
       }
@@ -175,6 +177,7 @@ function Renderer(canvas) {
       rectsByColor[cssColor] = makeRectsObj();
     }
     let rectsObj = rectsByColor[cssColor];
+    rectsObj.isDirty = true;
     if (rectsObj.vertexCount + VERTICES_PER_RECT >=
         rectsObj.vertexArray.length / VERTEX_NUM_COMPONENTS) {
       let oldArray = rectsObj.vertexArray;
@@ -208,6 +211,7 @@ function Renderer(canvas) {
     for (let [cssColor, rectsObj] of Object.entries(rectsByColor)) {
       rectsObj.vertexCount = 0;
       rectsObj.hasAlpha = false;
+      rectsObj.isDirty = true;
     }
   }
 
@@ -286,7 +290,10 @@ function Renderer(canvas) {
         }
         gl.uniform4fv(uGlobalColor, hexToColorArray(cssColor));
         gl.bindBuffer(gl.ARRAY_BUFFER, rectsObj.vertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, rectsObj.vertexArray, gl.STATIC_DRAW);
+        if (rectsObj.isDirty) {
+          gl.bufferData(gl.ARRAY_BUFFER, rectsObj.vertexArray, gl.STATIC_DRAW);
+          rectsObj.isDirty = false;
+        }
 
         gl.enableVertexAttribArray(aVertexData);
         gl.vertexAttribPointer(aVertexData, VERTEX_NUM_COMPONENTS,
