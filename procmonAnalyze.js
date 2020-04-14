@@ -1,5 +1,6 @@
 import {parseCSV} from "./parseCSV.js"
 import {parseDiskify} from "./parseDiskify.js"
+import {parseProfiler} from "./parseProfiler.js"
 import Renderer from "./renderer.js"
 
 const BACKGROUND_DEPTH = 0.9;
@@ -12,6 +13,7 @@ const ASSUMED_CLUSTER_SIZE = 4096;
 
 const csvInput = document.getElementById("csvfile");
 const diskifyInput = document.getElementById("diskifyfile");
+const profilerInput = document.getElementById("profilerfile");
 const tooltip = document.getElementById("tooltip");
 const searchbar = document.getElementById("searchbar-input");
 const colorBySelect = document.getElementById("color-by-select");
@@ -182,24 +184,6 @@ async function drawData(data, diskify) {
   let tracks = [];
   let minTime = Number.MAX_VALUE;
   let maxTime = -1;
-
-  data = data.map(row => {
-    let operation = row.operation;
-    let path = row.path;
-    let pid = row.pid;
-    let tid = row.tid;
-    let detail = row.detail;
-    let processName = row.processName;
-    let start = parseTimeString(row.time);
-    let duration = parseFloat(row.duration);
-    if (isNaN(duration)) {
-      duration = 0.01;
-    }
-    return {
-      operation, path, pid, tid, start, duration, detail, processName
-    };
-  }).filter(row => row.duration > 0 || row.operation == "Process Start");
-  data.sort((lhs, rhs) => lhs.start - rhs.start);
 
   let totalTimeByOperation = {};
   let readsByPath = {};
@@ -494,6 +478,39 @@ async function readFileContents() {
       acc[headerMap[key]] = val;
       return acc;
     }, {}));
+
+    data = data.map(row => {
+      let operation = row.operation;
+      let path = row.path;
+      let pid = row.pid;
+      let tid = row.tid;
+      let detail = row.detail;
+      let processName = row.processName;
+      let start = parseTimeString(row.time);
+      let duration = parseFloat(row.duration);
+      if (isNaN(duration)) {
+        duration = 0.01;
+      }
+      return {
+        operation, path, pid, tid, start, duration, detail, processName
+      };
+    }).filter(row => row.duration > 0 || row.operation == "Process Start");
+
+    let profilerData = null;
+    if (profilerInput.files[0]) {
+      reader.readAsText(profilerInput.files[0], "UTF-8");
+      let profilerText = await new Promise((resolve, reject) => {
+        reader.onload = e => {
+          resolve(e.target.result);
+        };
+        reader.onerror = e => {
+          reject("error reading file");
+        };
+      });
+      data = parseProfiler(profilerText, data); 
+    }
+  
+    data.sort((lhs, rhs) => lhs.start - rhs.start);
 
     await drawData(data, diskifyData);
   }
