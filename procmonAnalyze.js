@@ -507,7 +507,8 @@ async function readFileContents() {
           reject("error reading file");
         };
       });
-      data = parseProfiler(profilerText, data); 
+      let processStartTime = data.find(row => row.operation == "Process Start").start;
+      data.push(...parseProfiler(profilerText, processStartTime));
     }
   
     data.sort((lhs, rhs) => lhs.start - rhs.start);
