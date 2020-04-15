@@ -449,27 +449,11 @@ async function readFileContents() {
   let file = csvInput.files[0];
   if (file) {
     let reader = new FileReader();
-    reader.readAsText(file, "UTF-8");
-    let text = await new Promise((resolve, reject) => {
-      reader.onload = e => {
-        resolve(e.target.result);
-      };
-      reader.onerror = e => {
-        reject("error reading file");
-      };
-    });
+    let text = await getFileText(reader, file);
 
     let diskifyData = null;
     if (diskifyInput.files[0]) {
-      reader.readAsText(diskifyInput.files[0], "UTF-8");
-      let diskifyText = await new Promise((resolve, reject) => {
-        reader.onload = e => {
-          resolve(e.target.result);
-        };
-        reader.onerror = e => {
-          reject("error reading file");
-        };
-      });
+      let diskifyText = await getFileText(reader, diskifyInput.files[0]);
 
       diskifyData = parseDiskify(diskifyText);
     }
@@ -498,15 +482,8 @@ async function readFileContents() {
 
     let profilerData = null;
     if (profilerInput.files[0]) {
-      reader.readAsText(profilerInput.files[0], "UTF-8");
-      let profilerText = await new Promise((resolve, reject) => {
-        reader.onload = e => {
-          resolve(e.target.result);
-        };
-        reader.onerror = e => {
-          reject("error reading file");
-        };
-      });
+      let profilerText = await getFileText(reader, profilerInput.files[0]);
+
       let processStartTime = data.find(row => row.operation == "Process Start").start;
       data.push(...parseProfiler(profilerText, processStartTime));
     }
@@ -516,6 +493,18 @@ async function readFileContents() {
     await drawData(data, diskifyData);
   }
 };
+
+async function getFileText(reader, file) {
+  reader.readAsText(file, "UTF-8");
+  return new Promise((resolve, reject) => {
+    reader.onload = e => {
+      resolve(e.target.result);
+    };
+    reader.onerror = e => {
+      reject("error reading file");
+    };
+  });
+}
 
 function smoothScroll(targetTranslate) {
   smoothValueChange("translate",
