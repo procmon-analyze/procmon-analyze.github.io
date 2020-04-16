@@ -203,23 +203,30 @@ async function drawData(data, diskify) {
     }
 
     let track = null;
-    let entry = false;
+    let entry = null;
 
     if (!totalTimeByOperation[operation]) {
       totalTimeByOperation[operation] = 0;
     }
 
     totalTimeByOperation[operation] += duration;
-
+    let fromProfiler = operation.startsWith("ProfilerMarker");
     for (let candidate of tracks) {
       if (operation == candidate.operation) {
         let lastEntry = candidate.entries[candidate.entries.length - 1];
         if (start > lastEntry.end) {
           track = candidate;
           break;
-        } else if (path == lastEntry.path && pid == lastEntry.pid && tid == lastEntry.tid) {
+        } else if (path == lastEntry.path &&
+                   pid == lastEntry.pid &&
+                   tid == lastEntry.tid &&
+                   (!fromProfiler ||
+                     lastEntry.detail == detail)) {
+
           lastEntry.end = end;
-          lastEntry.detail += "\n" + detail;
+          if (!fromProfiler) {
+            lastEntry.detail += "\n" + detail;
+          }
           track = candidate;
           entry = lastEntry;
           break;
@@ -229,7 +236,7 @@ async function drawData(data, diskify) {
 
     if (!entry) {
       if (!track) {
-        track = {operation, entries: []};
+        track = {operation, entries: [], fromProfiler};
         tracks.push(track);
       }
       entry = {
@@ -245,6 +252,7 @@ async function drawData(data, diskify) {
         hiddenBySearch: false,
         rectHandle: null,
       };
+
       track.entries.push(entry);
     }
 
@@ -272,7 +280,16 @@ async function drawData(data, diskify) {
     }
   }
 
-  tracks.sort((lhs, rhs) => totalTimeByOperation[rhs.operation] - totalTimeByOperation[lhs.operation]);
+  tracks.sort((lhs, rhs) => {
+    // Ensure profiler tracks always show up at the end
+    if (lhs.fromProfiler && !rhs.fromProfiler) {
+      return 1;
+    }
+    if (rhs.fromProfiler && !lhs.fromProfiler) {
+      return -1;
+    }
+    return totalTimeByOperation[rhs.operation] - totalTimeByOperation[lhs.operation];
+  });
 
   for (let i = 0; i < tracks.length; i++) {
     tracks[i].index = i;
@@ -793,10 +810,12 @@ function showEntryTooltip(entry, position, header = null) {
     let tooltipRect = tooltip.getBoundingClientRect();
     if (tooltipRect.bottom > window.innerHeight - 4) {
       top -= tooltipRect.bottom - window.innerHeight + 4;
+      top = Math.max(0, top);
       tooltip.style.top = `${top}px`;
     }
     if (tooltipRect.right > window.innerWidth - 4) {
       left -= tooltipRect.right - window.innerWidth + 4;
+      left = Math.max(0, left);
       tooltip.style.left = `${left}px`;
     }
 
