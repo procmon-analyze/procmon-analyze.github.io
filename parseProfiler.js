@@ -51,9 +51,14 @@ export function parseProfiler(text, processStartTime) {
           console.warn("Bad interval on tracing marker: " + data.interval);
         }
       } else {
+        let path = "";
+        if (name == "FileIO" && data) {
+          path = data.filename;
+        }
+
         let marker = {
           operation: `ProfilerMarker - ${obj.meta.categories[markers.category[i]].name}`,
-          path: "",
+          path,
           pid: thread.pid,
           tid: thread.tid,
           detail: name,
