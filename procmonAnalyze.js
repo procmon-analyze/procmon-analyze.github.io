@@ -501,14 +501,9 @@ async function readFileContents() {
     if (profilerInput.files[0]) {
       let profilerText = await getFileText(reader, profilerInput.files[0]);
       let processStartTimes = data.filter(row => row.operation == "Process Start");
-      let processStartTime = processStartTimes[0].start;
-      for (let i = 0; i < processStartTimes.length-1; i++) {
-        if (processStartTimes[i+1].detail.includes("-contentproc")){
-          break;
-        } else {
-          processStartTime = processStartTimes[i+1].start;
-        }
-      }
+      let firstContentIndex = processStartTimes.findIndex(row => row.detail.includes("-contentproc"));
+      let mainProcessIndex = firstContentIndex > 0 ? firstContentIndex - 1 : 0;
+      let processStartTime = processStartTimes[mainProcessIndex];
 
       data.push(...parseProfiler(profilerText, processStartTime));
     }
@@ -1393,4 +1388,3 @@ diskmapRenderer.startup();
 if (window.location.href.indexOf("localhost") != -1) {
   readFileContents();
 }
-
