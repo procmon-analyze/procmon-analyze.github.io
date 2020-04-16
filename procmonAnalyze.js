@@ -500,8 +500,16 @@ async function readFileContents() {
     let profilerData = null;
     if (profilerInput.files[0]) {
       let profilerText = await getFileText(reader, profilerInput.files[0]);
+      let processStartTimes = data.filter(row => row.operation == "Process Start");
+      let processStartTime = processStartTimes[0].start;
+      for (let i = 0; i < processStartTimes.length-1; i++) {
+        if (processStartTimes[i+1].detail.includes("-contentproc")){
+          break;
+        } else {
+          processStartTime = processStartTimes[i+1].start;
+        }
+      }
 
-      let processStartTime = data.find(row => row.operation == "Process Start").start;
       data.push(...parseProfiler(profilerText, processStartTime));
     }
   
