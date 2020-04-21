@@ -503,7 +503,7 @@ async function readFileContents() {
       let processStartTimes = data.filter(row => row.operation == "Process Start");
       let firstContentIndex = processStartTimes.findIndex(row => row.detail.includes("-contentproc"));
       let mainProcessIndex = firstContentIndex > 0 ? firstContentIndex - 1 : 0;
-      let processStartTime = processStartTimes[mainProcessIndex];
+      let processStartTime = processStartTimes[mainProcessIndex].start;
 
       data.push(...parseProfiler(profilerText, processStartTime));
     }
