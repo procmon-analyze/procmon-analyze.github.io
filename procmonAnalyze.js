@@ -22,6 +22,7 @@ const canvas = document.getElementById("canvas");
 const fsmapCanvas = document.getElementById("fsmap-canvas");
 const diskmapCanvas = document.getElementById("diskmap-canvas");
 const readInfo = document.getElementById("read-info");
+const tools = document.getElementById("tools");
 
 const renderer = new Renderer(canvas);
 const fsmapRenderer = new Renderer(fsmapCanvas);
@@ -180,6 +181,7 @@ function parseReadDetail(detail) {
 
 async function drawData(data, diskify) {
   document.getElementById("chooserWrapper").style.display = "none";
+  tools.style.display = "block";
 
   let tracks = [];
   let minTime = Number.MAX_VALUE;

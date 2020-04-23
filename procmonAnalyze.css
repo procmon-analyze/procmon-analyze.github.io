@@ -48,3 +48,7 @@ body {
   max-height: 99vh;
   overflow: scroll;
 }
+
+#tools {
+  display: none;
+}

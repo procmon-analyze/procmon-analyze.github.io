@@ -28,16 +28,18 @@
 
   <div id="timeline"></div>
   <pre id="tooltip" class="tooltip"></pre>
-  <div class="searchbar">
-    <input id="searchbar-input" type="text" name="searchbar-input" placeholder="Search...">
-  </div>
-  <div class="color-by">
-    Color by:
-    <select id="color-by-select">
-      <option value="operation" selected="true">Operation</option>    
-      <option value="pid">Process ID</option>    
-      <option value="tid">Thread ID</option>    
-    </select>
+  <div id="tools">
+    <div class="searchbar">
+      <input id="searchbar-input" type="text" name="searchbar-input" placeholder="Search...">
+    </div>
+    <div class="color-by">
+      Color by:
+      <select id="color-by-select">
+        <option value="operation" selected="true">Operation</option>
+        <option value="pid">Process ID</option>
+        <option value="tid">Thread ID</option>
+      </select>
+    </div>
   </div>
 
   <script id="vertex-shader" type="x-shader/x-vertex">
