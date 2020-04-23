@@ -526,6 +526,7 @@ async function getFileText(reader, file) {
   });
 }
 
+// TODO: remove duplication between these and their diskmap equivalents
 function smoothScroll(targetTranslate) {
   smoothValueChange("translate",
                     gState.rendererTranslate,
@@ -562,12 +563,13 @@ function smoothScale(targetScale) {
     let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
 
     let totalTime = maxTime - minTime;
-    let windowHeightInSeconds = canvas.height / rendererScale;
+    let windowHeightInSeconds = canvas.height / scale;
     let newTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds),
                                             -newWindowTopInPixels / scale));
     gState.rendererScale = scale;
     renderer.scale(gState.trackWidth, gState.rendererScale);
     gState.rendererTranslate = newTranslate;
+
     gState.targetRendererTranslate = newTranslate;
     renderer.translate(0, gState.rendererTranslate);
     renderer.draw();
@@ -665,7 +667,7 @@ function smoothDiskmapScale(targetScale) {
     let newMousePositionAbsolute = scaleFactor * mousePositionAbsolute;
     let newWindowTopInPixels = newMousePositionAbsolute - mouseY;
 
-    let windowHeightInLcns = diskmapCanvas.height / diskmapScale;
+    let windowHeightInLcns = diskmapCanvas.height / scale;
     let newTranslate = Math.min(0, Math.max(-(maxLcn - windowHeightInLcns),
                                             -newWindowTopInPixels / scale));
 
@@ -1174,8 +1176,8 @@ function smoothValueChangeCb() {
     let nextValue = currentValue + dp * dt;
 
     let targetMet = false;
-    if (currentValue <= target && nextValue > target ||
-        currentValue >= target && nextValue < target) {
+    if (currentValue <= target && nextValue >= target ||
+        currentValue >= target && nextValue <= target) {
       nextValue = target;
       dp = 0;
       targetMet = true;
