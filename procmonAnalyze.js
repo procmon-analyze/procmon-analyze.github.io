@@ -1,4 +1,5 @@
 import {parseCSV} from "./parseCSV.js"
+import {parseProcmonXML} from "./parseProcmonXML.js"
 import {parseDiskify} from "./parseDiskify.js"
 import {parseProfiler} from "./parseProfiler.js"
 import Renderer from "./renderer.js"
@@ -200,7 +201,7 @@ async function drawData(data, diskify) {
       }
       minTime = start;
     }
-    if (end > maxTime) {  
+    if (end > maxTime) {
       maxTime = end;
     }
 
@@ -303,7 +304,7 @@ async function drawData(data, diskify) {
       for (let [start, length] of entries) {
         if (start + length > maxLcn) {
           maxLcn = start + length;
-        } 
+        }
       }
     }
   }
@@ -477,10 +478,22 @@ async function readFileContents() {
       diskifyData = parseDiskify(diskifyText);
     }
 
-    let data = parseCSV(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
-      acc[headerMap[key]] = val;
-      return acc;
-    }, {}));
+    let data;
+
+    let filename = file.name.toLowerCase();
+    if (filename.endsWith(".csv")) {
+      data = parseCSV(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
+        acc[headerMap[key]] = val;
+        return acc;
+      }, {}));
+    } else if (filename.endsWith('.xml')) {
+      data = parseProcmonXML(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
+        acc[headerMap[key]] = val;
+        return acc;
+      }, {}));
+    } else {
+      console.error("Unsupported extension for file " + filename);
+    }
 
     data = data.map(row => {
       let operation = row.operation;
@@ -509,7 +522,7 @@ async function readFileContents() {
 
       data.push(...parseProfiler(profilerText, processStartTime));
     }
-  
+
     data.sort((lhs, rhs) => lhs.start - rhs.start);
 
     await drawData(data, diskifyData);
@@ -1347,7 +1360,7 @@ function handleMouseUp(event) {
       event.preventDefault();
       gState.middleMouseDownFor = null;
     } else {
-      
+
     }
   }
 }
