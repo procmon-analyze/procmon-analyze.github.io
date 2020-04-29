@@ -87,12 +87,6 @@ export async function symbolicateStacks(profileObj, dataTable) {
   //       [<index_into_memoryMap>, <address>],
   //       ...,
   //     },
-  //     [
-  //       [<index_into_memoryMap>, <address>],
-  //       [<index_into_memoryMap>, <address>],
-  //       ...,
-  //     },
-  //     ...,
   //   ],
   // }
   // 
