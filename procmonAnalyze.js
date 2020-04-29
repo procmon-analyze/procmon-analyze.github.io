@@ -1,7 +1,7 @@
 import {parseCSV} from "./parseCSV.js"
 import {parseProcmonXML} from "./parseProcmonXML.js"
 import {parseDiskify} from "./parseDiskify.js"
-import {parseProfiler} from "./parseProfiler.js"
+import {extractProfileMarkers, symbolicateStacks} from "./processProfile.js"
 import Renderer from "./renderer.js"
 
 const BACKGROUND_DEPTH = 0.9;
@@ -192,7 +192,17 @@ async function drawData(data, diskify) {
   let readsByPath = {};
 
   for (let row of data) {
-    let { operation, path, pid, tid, start, duration, detail, processName } = row;
+    let {
+      operation,
+      path,
+      pid,
+      tid,
+      start,
+      duration,
+      detail,
+      processName,
+      stack,
+    } = row;
     let end = start + duration;
 
     if (start < minTime) {
@@ -252,6 +262,7 @@ async function drawData(data, diskify) {
         processName,
         operation,
         track,
+        stack,
         hiddenBySearch: false,
         rectHandle: null,
       };
@@ -483,12 +494,14 @@ async function readFileContents() {
     let filename = file.name.toLowerCase();
     if (filename.endsWith(".csv")) {
       data = parseCSV(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
-        acc[headerMap[key]] = val;
+        key = headerMap[key] || key;
+        acc[key] = val;
         return acc;
       }, {}));
     } else if (filename.endsWith('.xml')) {
       data = parseProcmonXML(text).map(row => Object.entries(row).reduce((acc,[key,val]) => {
-        acc[headerMap[key]] = val;
+        key = headerMap[key] || key;
+        acc[key] = val;
         return acc;
       }, {}));
     } else {
@@ -500,6 +513,7 @@ async function readFileContents() {
       let path = row.path;
       let pid = row.pid;
       let tid = row.tid;
+      let stack = row.stack;
       let detail = row.detail;
       let processName = row.processName;
       let start = parseTimeString(row.time);
@@ -508,19 +522,25 @@ async function readFileContents() {
         duration = 0.01;
       }
       return {
-        operation, path, pid, tid, start, duration, detail, processName
+        operation, path, pid, tid, start, duration, detail, processName, stack,
       };
     }).filter(row => row.duration > 0 || row.operation == "Process Start");
 
     let profilerData = null;
     if (profilerInput.files[0]) {
       let profilerText = await getFileText(reader, profilerInput.files[0]);
+      let profileObj = JSON.parse(profilerText);
+
       let processStartTimes = data.filter(row => row.operation == "Process Start");
+      if (!processStartTimes.length) {
+        processStartTimes = data;
+      }
       let firstContentIndex = processStartTimes.findIndex(row => row.detail.includes("-contentproc"));
       let mainProcessIndex = firstContentIndex > 0 ? firstContentIndex - 1 : 0;
       let processStartTime = processStartTimes[mainProcessIndex].start;
 
-      data.push(...parseProfiler(profilerText, processStartTime));
+      data.push(...extractProfileMarkers(profileObj, processStartTime));
+      await symbolicateStacks(profileObj, data);
     }
 
     data.sort((lhs, rhs) => lhs.start - rhs.start);
@@ -962,6 +982,7 @@ function drawPathInfo() {
       totalReadByPath,
       diskify,
       maxLcn,
+      selectedEntry,
     } = gState;
 
     fsmapRenderer.clearAll();
@@ -995,6 +1016,23 @@ function drawPathInfo() {
         text += `Physical locations on disk:\n`;
         for (let [start, length] of diskify[activePath]) {
           text += `  clusters ${start.toLocaleString()} through ${(start + length).toLocaleString()} (length: ${(length * 4096 / 1000000).toLocaleString()} MB)\n`;
+        }
+      }
+
+      if (selectedEntry && selectedEntry.stack) {
+        text += "\nCall stack:\n"
+        for (let {path, location} of selectedEntry.stack) {
+          text += `  ${location} (${path})\n`;
+        }
+      }
+
+      readInfo.textContent = text;
+    } else if (selectedEntry && selectedEntry.stack) {
+      let text = "";
+      if (selectedEntry && selectedEntry.stack) {
+        text += "\nCall stack:\n"
+        for (let {path, location} of selectedEntry.stack) {
+          text += `  ${location} (${path})\n`;
         }
       }
 
