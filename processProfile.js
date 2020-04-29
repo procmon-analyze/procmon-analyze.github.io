@@ -124,10 +124,10 @@ export async function symbolicateStacks(profileObj, dataTable) {
       if (pathLower in memoryMapIndexMap) {
         let frameKey = `${memoryMapIndexMap[pathLower]}:${frame.address}`;
         if (!(frameKey in frameIndexMap)) {
-          frameIndexMap[frameKey] = true;
-          frame.frameIndex = frames.length;
+          frameIndexMap[frameKey] = frames.length;
           frames.push([memoryMapIndexMap[pathLower], Number(frame.address)]);
         }
+        frame.frameIndex = frameIndexMap[frameKey];
       }
     }
   }
