@@ -1,7 +1,11 @@
 import {parseCSV} from "./parseCSV.js"
 import {parseProcmonXML} from "./parseProcmonXML.js"
 import {parseDiskify} from "./parseDiskify.js"
-import {extractProfileMarkers, symbolicateStacks} from "./processProfile.js"
+import {
+  extractProfileMarkers,
+  symbolicateStacks,
+  nameThreadsAndProcesses
+} from "./processProfile.js"
 import Renderer from "./renderer.js"
 
 const BACKGROUND_DEPTH = 0.9;
@@ -197,6 +201,8 @@ async function drawData(data, diskify) {
       path,
       pid,
       tid,
+      pName,
+      tName,
       start,
       duration,
       detail,
@@ -258,6 +264,8 @@ async function drawData(data, diskify) {
         path,
         pid,
         tid,
+        pName,
+        tName,
         detail,
         processName,
         operation,
@@ -274,23 +282,25 @@ async function drawData(data, diskify) {
       let readDetail = parseReadDetail(detail);
       let readStart = readDetail.offset;
       let readEnd = readDetail.offset + readDetail.length;
-      if (!readsByPath[path]) {
-        readsByPath[path] = {
-          reads:[],
-          minAddress: readStart,
-          maxAddress: readEnd,
-          totalRead: 0,
-        };
-      }
+      if (readDetail.length != 524288) {
+        if (!readsByPath[path]) {
+          readsByPath[path] = {
+            reads:[],
+            minAddress: readStart,
+            maxAddress: readEnd,
+            totalRead: 0,
+          };
+        }
 
-      readsByPath[path].reads.push({readDetail, entry, start, end});
-      if (readStart < readsByPath[path].minAddress) {
-        readsByPath[path].minAddress = readStart;
+        readsByPath[path].reads.push({readDetail, entry, start, end});
+        if (readStart < readsByPath[path].minAddress) {
+          readsByPath[path].minAddress = readStart;
+        }
+        if (readEnd > readsByPath[path].maxAddress) {
+          readsByPath[path].maxAddress = readEnd;
+        }
+        readsByPath[path].totalRead += readDetail.length;
       }
-      if (readEnd > readsByPath[path].maxAddress) {
-        readsByPath[path].maxAddress = readEnd;
-      }
-      readsByPath[path].totalRead += readDetail.length;
     }
   }
 
@@ -452,6 +462,10 @@ function drawForeground() {
         matchesSearch = true;
       } else if (searchRegex.test(entry.processName)) {
         matchesSearch = true;
+      } else if (entry.pName && searchRegex.test(entry.pName)) {
+        matchesSearch = true;
+      } else if (entry.tName && searchRegex.test(entry.tName)) {
+        matchesSearch = true;
       } else if (entry.detail && searchRegex.test(entry.detail)) {
         matchesSearch = true;
       }
@@ -541,6 +555,7 @@ async function readFileContents() {
 
       data.push(...extractProfileMarkers(profileObj, processStartTime));
       await symbolicateStacks(profileObj, data);
+      nameThreadsAndProcesses(profileObj, data);
     }
 
     data.sort((lhs, rhs) => lhs.start - rhs.start);
@@ -823,8 +838,16 @@ function showEntryTooltip(entry, position, header = null) {
     let text = header ? `${header}\n` : "";
     text += `Op: ${entry ? entry.operation : track.operation}\n`;
     text += `Path: ${entry.path}\n`;
-    text += `Process ID: ${entry.pid}\n`;
-    text += `Thread ID: ${entry.tid}\n`;
+    if (entry.pName) {
+      text += `Process: ${entry.pName} (${entry.pid})\n`;
+    } else {
+      text += `Process ID: ${entry.pid}\n`;
+    }
+    if (entry.tName) {
+      text += `Thread: ${entry.tName} (${entry.tid})\n`;
+    } else {
+      text += `Thread ID: ${entry.tid}\n`;
+    }
     if (entry.detail) {
       let detailLines = entry.detail.split("\n");
       text += `Detail: ${detailLines.slice(0, MAX_DETAIL_LINES).join("\n        ")}\n`;
@@ -1440,6 +1463,6 @@ renderer.startup();
 fsmapRenderer.startup();
 diskmapRenderer.startup();
 
-if (window.location.href.indexOf("localhost") != -1) {
+if (false && window.location.href.indexOf("localhost") != -1) {
   readFileContents();
 }

@@ -102,11 +102,12 @@ export async function symbolicateStacks(profileObj, dataTable) {
 
   for (let thread of profileObj.threads) {
     for (let lib of thread.libs) {
-      if (!(lib.path.toLowerCase() in memoryMapIndexMap)) {
-        let pathLower = lib.path.toLowerCase();
-        memoryMapIndexMap[pathLower] = memoryMap.length;
-        let splitPath = pathLower.split("\\");
-        memoryMap.push([splitPath[splitPath.length - 1].replace(".dll", ".pdb").replace(".exe", ".pdb"), lib.breakpadId]);
+      let pathLower = lib.path.toLowerCase();
+      let splitPath = pathLower.split("\\");
+      let pathLeaf = splitPath[splitPath.length - 1];
+      if (!(pathLeaf in memoryMapIndexMap)) {
+        memoryMapIndexMap[pathLeaf] = memoryMap.length;
+        memoryMap.push([pathLeaf.replace(".dll", ".pdb").replace(".exe", ".pdb"), lib.breakpadId]);
       }
     }
   }
@@ -115,21 +116,18 @@ export async function symbolicateStacks(profileObj, dataTable) {
     let entry = dataTable[i];
     for (let frame of entry.stack || []) {
       let pathLower = frame.path.toLowerCase();
-      if (pathLower in memoryMapIndexMap) {
-        let frameKey = `${memoryMapIndexMap[pathLower]}:${frame.address}`;
+      let splitPath = pathLower.split("\\");
+      let pathLeaf = splitPath[splitPath.length - 1];
+      if (pathLeaf in memoryMapIndexMap) {
+        let frameKey = `${memoryMapIndexMap[pathLeaf]}:${frame.address}`;
         if (!(frameKey in frameIndexMap)) {
           frameIndexMap[frameKey] = frames.length;
-          frames.push([memoryMapIndexMap[pathLower], Number(frame.address)]);
+          frames.push([memoryMapIndexMap[pathLeaf], Number(frame.address)]);
         }
         frame.frameIndex = frameIndexMap[frameKey];
       }
     }
   }
-
-  let payload = {
-    memoryMap,
-    stacks: [frames],
-  };
   async function postData(url = '', data = {}) {
     const response = await fetch(url, {
       method: 'POST',
@@ -141,21 +139,44 @@ export async function symbolicateStacks(profileObj, dataTable) {
     return await response.json(); // parses JSON response into native JavaScript objects
   }
 
+  let stacks = [];
+  for (let i = 0; i < Math.ceil(frames.length / 64); i++) {
+    stacks.push(frames.slice(i * 64, (i + 1) * 64));
+  }
+  let payload = {
+    memoryMap,
+    stacks,
+  };
   let data = await postData("https://symbols.mozilla.org/symbolicate/v5", {jobs: [payload]});
-  let resultFrames = data.results[0].stacks[0];
+  let resultFrames = data.results[0].stacks.flat();
 
   for (let i = 0; i < dataTable.length; i++) {
     let entry = dataTable[i];
     for (let frame of entry.stack || []) {
-      let pathLower = frame.path.toLowerCase();
-      if (pathLower in memoryMapIndexMap) {
-        if ("frameIndex" in frame) {
-          let resultFrame = resultFrames[frame.frameIndex];
-          frame.location = resultFrame.function;
-        }
+      if ("frameIndex" in frame) {
+        let resultFrame = resultFrames[frame.frameIndex];
+        frame.location = resultFrame.function;
       }
       let splitPath = frame.path.toLowerCase().split("\\");
       frame.path = splitPath[splitPath.length - 1];
     }
   }
 } 
+
+export function nameThreadsAndProcesses(profileObj, dataTable) {
+  let pidsToNames = {};
+  let tidsToNames = {};
+  for (let thread of profileObj.threads) {
+    pidsToNames[thread.pid] = thread.processName;
+    tidsToNames[thread.tid] = thread.name;
+  }
+
+  for (let entry of dataTable) {
+    if (entry.pid in pidsToNames) {
+      entry.pName = pidsToNames[entry.pid];
+    }
+    if (entry.tid in tidsToNames) {
+      entry.tName = tidsToNames[entry.tid];
+    }
+  }
+}

@@ -1,6 +1,6 @@
 export function parseProcmonXML(text) {
   let parser = new DOMParser();
-  let doc = parser.parseFromString(text, "text/xml");
+  let doc = parser.parseFromString(text, "application/xml");
   let eventlist = doc.querySelector("procmon > eventlist");
   let processlist = doc.querySelector("procmon > processlist");
   let result = [];
