@@ -827,7 +827,7 @@ function showEntryTooltip(entry, position, header = null) {
     y = position.y + 8;
   } else if (entry) {
     x = (entry.track.index + 1) * trackWidth + 4;
-    y = (entry.start - minTime - rendererTranslate) * rendererScale;
+    y = (entry.start - minTime + rendererTranslate) * rendererScale;
   }
 
   if (entry) {
@@ -857,6 +857,13 @@ function showEntryTooltip(entry, position, header = null) {
     }
     text += `Process Name: ${entry.processName}\n`;
     text += `Duration: ${((entry.end - entry.start) * 1000).toFixed(3)}ms\n`;
+
+    if (entry.stack) {
+      text += "\nCall stack:\n"
+      for (let {path, location} of entry.stack) {
+        text += `  ${location} (${path})\n`;
+      }
+    }
 
     let lines = text.split("\n");
     for (let line of lines) {
