@@ -26,11 +26,20 @@ body {
 
 .color-by {
   position: absolute;
-  left: calc(50% - 300px);
+  left: calc(45% - 300px);
   top: 64px; 
 }
 
 #canvas {
+  float: left;
+}
+
+#canvas-overlay {
+  float: left;
+  position: absolute;
+}
+
+#canvas-markers {
   float: left;
 }
 

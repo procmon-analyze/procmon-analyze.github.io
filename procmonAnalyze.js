@@ -22,9 +22,33 @@ const profilerInput = document.getElementById("profilerfile");
 const tooltip = document.getElementById("tooltip");
 const searchbar = document.getElementById("searchbar-input");
 const colorBySelect = document.getElementById("color-by-select");
+const refocus = document.getElementById("redraw")
+const reset = document.getElementById("reset");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
 const fsmapCanvas = document.getElementById("fsmap-canvas");
+const overlayCanvas = document.getElementById("canvas-overlay");
+const markersCanvas = document.getElementById("canvas-markers");
+var data, diskifyData; // Contains the entire array of data from input file
+var focusedData, focusedDiskifyData;
+
+var ctx;
+var offsetX, offsetY;
+reOffset();
+window.onscroll=function(e){ reOffset(); }
+window.onresize=function(e){ reOffset(); }
+var isDownTopSlider = false;
+var isDownBottomSlider = false;
+var topRange, bottomRange;
+var topConstraint, bottomConstraint;
+var topTime, bottomTime;
+var isFirstAdjustment = true;
+
+var dataStart, dataEnd, dataTotalTime;
+
+var overlayCtx;
+var markerCtx;
+
 const diskmapCanvas = document.getElementById("diskmap-canvas");
 const readInfo = document.getElementById("read-info");
 const tools = document.getElementById("tools");
@@ -41,6 +65,12 @@ fsmapCanvas.height = window.innerHeight - 16;
 
 diskmapCanvas.width = window.innerWidth * 0.025;
 diskmapCanvas.height = window.innerHeight - 16;
+
+overlayCanvas.width = canvas.width;
+overlayCanvas.height = canvas.height;
+
+markersCanvas.width = window.innerWidth * 0.01;
+markersCanvas.height = window.innerHeight - 16;
 
 const VIEWPORT_BUFFER = canvas.height;
 
@@ -184,7 +214,7 @@ function parseReadDetail(detail) {
   }
 }
 
-async function drawData(data, diskify) {
+async function drawData(aData, diskify, isRefocused) {
   document.getElementById("chooserWrapper").style.display = "none";
   tools.style.display = "block";
 
@@ -195,7 +225,7 @@ async function drawData(data, diskify) {
   let totalTimeByOperation = {};
   let readsByPath = {};
 
-  for (let row of data) {
+  for (let row of aData) {
     let {
       operation,
       path,
@@ -212,12 +242,12 @@ async function drawData(data, diskify) {
     let end = start + duration;
 
     if (start < minTime) {
-      if (minTime != Number.MAX_VALUE) {
+      if (minTime != Number.MAX_VALUE && !isRefocused) {
         throw new Error("Data should be ordered by start time.");
-      }
+      } 
       minTime = start;
     }
-    if (end > maxTime) {
+    if (end > maxTime && !isRefocused) {
       maxTime = end;
     }
 
@@ -322,6 +352,9 @@ async function drawData(data, diskify) {
   let maxLcn = 0;
   if (diskify) {
     for (let [path, entries] of Object.entries(diskify)) {
+      // TO DO: what do start and length actually represent here? 
+      // I.e: start: 7126100
+      // length: 4? 
       for (let [start, length] of entries) {
         if (start + length > maxLcn) {
           maxLcn = start + length;
@@ -331,9 +364,22 @@ async function drawData(data, diskify) {
   }
   let diskmapScale = diskmapCanvas.height / maxLcn;
 
+  if (isRefocused) {
+    maxTime = bottomTime;
+    minTime = topTime;
+  }
+
   let totalTime = maxTime - minTime;
   let trackWidth = canvas.width / tracks.length;
-  let rendererScale = canvas.height / totalTime;
+
+  if (!isRefocused) {
+    dataStart = minTime;
+    dataEnd = maxTime;
+    dataTotalTime = totalTime;
+  }
+
+  let rendererScale = canvas.height / dataTotalTime;
+
   gState = {
     minTime,
     maxTime,
@@ -364,15 +410,16 @@ async function drawData(data, diskify) {
   renderer.translate(0, 0);
 
   renderer.clearAll();
-  drawBackground();
-  drawForeground();
+  drawBackground(isRefocused);
+  drawRangeMarkers();
+  drawForeground(isRefocused);
   renderer.draw();
 
   drawTopPathsInfo();
   scheduleRedrawDiskmap();
 }
 
-function drawBackground() {
+function drawBackground(isRefocused) {
   let {
     trackWidth,
     minTime,
@@ -383,12 +430,27 @@ function drawBackground() {
     rendererScale
   } = gState;
 
-  let timelineScale =
-    rendererScale < 1000 ? 1 :
-    rendererScale < 10000 ? 0.1 :
-    rendererScale < 100000 ? 0.01 : 0.001;
+  let timelineScale;
+  if (isRefocused) {
+    timelineScale = rendererScale < 100 ? 1 : 
+                    rendererScale < 1000 ? 0.1 : 0.001;
+  } else {
+    timelineScale =
+        rendererScale < 1000 ? 1 :
+        rendererScale < 10000 ? 0.1 :
+        rendererScale < 100000 ? 0.01 : 0.001;
+  }
 
-  for (let i = 0; i < Math.ceil(totalTime / timelineScale); i++) {
+  let timelineStart = 0; 
+  let timelineEnd = totalTime / timelineScale;
+  let timelineDuration = timelineEnd - timelineStart;
+
+  if (isRefocused) {
+    timelineStart = Math.floor(topTime-data[0].start);
+    timelineEnd = Math.ceil(bottomTime-data[0].start);
+  }
+
+  for (let i = 0; i < Math.ceil(timelineDuration/timelineScale); i++) {
     let color = (i & 1) ? "#ffffff" : "#efefef";
     renderer.pushRect(color,
                       0,
@@ -397,7 +459,6 @@ function drawBackground() {
                       timelineScale,
                       BACKGROUND_DEPTH - 0.05);
   }
-
   let lastOperation = null;
   for (let i = 0; i < tracks.length; i++) {
     let track = tracks[i];
@@ -413,13 +474,10 @@ function drawBackground() {
 
   gState.timelineIndicators = [];
   timeline.textContent = "";
-  let printSeconds = timelineScale == 1;
-  for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
-    let offset = i * timelineScale;
+  let offsetCounter = 0;
+  for (let i = timelineStart; i < Math.floor(timelineEnd); i+=timelineScale) {
+    let offset = offsetCounter * timelineScale;
     let offsetPx = (offset + rendererTranslate) * rendererScale;
-    if (offsetPx < -VIEWPORT_BUFFER || offsetPx > canvas.height + VIEWPORT_BUFFER) {
-      continue;
-    }
 
     let div = document.createElement("div");
     div.style.position = "fixed";
@@ -429,7 +487,37 @@ function drawBackground() {
 
     timeline.appendChild(div);
     gState.timelineIndicators.push({div, offset});
+    offsetCounter++;
   }
+}
+
+function drawRangeMarkers() {
+  if (overlayCtx) {
+    overlayCtx.clearRect(0,0,overlayCanvas.width, overlayCanvas.height);
+  } else {
+    overlayCtx = overlayCanvas.getContext('2d');
+  }
+
+  if (markerCtx) {
+    markerCtx.clearRect(0,0,markersCanvas.width, markersCanvas.height);
+  } else {
+    markerCtx = markersCanvas.getContext('2d');
+  }
+
+
+  var cw = markersCanvas.width;
+  var ch = markersCanvas.height;
+  reOffset();
+  topRange = makeRangeControl(0,0,cw,ch, true);
+  bottomRange = makeRangeControl(0,0,cw,ch, false)
+  drawRangeControl(topRange, true);
+  drawRangeControl(bottomRange, false);
+
+
+  markerCtx.onmousedown=(function(e){handleMouseDown(e);});
+  markerCtx.onmousemove=(function(e){handleMouseMove(e);});
+  markerCtx.onmouseup=(function(e){handleMouseUpOut(e);});
+  markerCtx.onmouseout=(function(e){handleMouseUpOut(e);});
 }
 
 // From MDN (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions)
@@ -437,7 +525,7 @@ function escapeRegExp(string) {
   return string.replace(/[.*+\-?^${}()|[\]\\]/g, '\\$&');
 }
 
-function drawForeground() {
+function drawForeground(isRefocused) {
   let {
     trackWidth,
     minTime,
@@ -498,14 +586,12 @@ async function readFileContents() {
     let reader = new FileReader();
     let text = await getFileText(reader, file);
 
-    let diskifyData = null;
+    diskifyData = null;
     if (diskifyInput.files[0]) {
       let diskifyText = await getFileText(reader, diskifyInput.files[0]);
 
       diskifyData = parseDiskify(diskifyText);
     }
-
-    let data;
 
     let filename = file.name.toLowerCase();
     if (filename.endsWith(".csv")) {
@@ -562,7 +648,10 @@ async function readFileContents() {
 
     data.sort((lhs, rhs) => lhs.start - rhs.start);
 
-    await drawData(data, diskifyData);
+    focusedData = data;
+    focusedDiskifyData = diskifyData;
+
+    await drawData(data, diskifyData, false);
   }
 };
 
@@ -580,12 +669,20 @@ async function getFileText(reader, file) {
 
 // TODO: remove duplication between these and their diskmap equivalents
 function smoothScroll(targetTranslate) {
+  console.log(" In smooth scroll");
+  console.log("g state renderer translate:" + gState.rendererTranslate);
+  console.log("target translate" + targetTranslate);
+  console.log("gstate rendererSCale" + gState.rendererScale);
   smoothValueChange("translate",
                     gState.rendererTranslate,
                     targetTranslate,
                     5000 / gState.rendererScale,
                     (translate) => {
     gState.rendererTranslate = translate;
+  console.log("new renderer translate" + gState.rendererTranslate);
+  console.log("I think I need to update top and bottom constraints");
+  console.log(topConstraint);
+  console.log(bottomConstraint);
     renderer.translate(0, gState.rendererTranslate);
     renderer.draw();
     scheduleTranslateTimeline();
@@ -639,10 +736,24 @@ function doScroll(dy) {
     mouseY,
   } = gState;
 
-  let totalTime = maxTime - minTime;
+  console.log("In do scroll");
+
+  // rendererScale is off
+  // 
+  // This should represent the original numbers
+  // let totalTime = maxTime - minTime;
+  let totalTime = dataTotalTime;
   let windowHeightInSeconds = canvas.height / rendererScale;
   let newTranslate = targetRendererTranslate - dy / rendererScale;
   newTranslate = Math.min(0, Math.max(-(totalTime - windowHeightInSeconds), newTranslate));
+  console.log("Total time: " + totalTime);
+  console.log("Window heigh tin seconds" + windowHeightInSeconds);
+  console.log("new translate" + newTranslate);
+  console.log("Mouse y? " + gState.mouseY);
+
+  // // topRange.pct=Math.max(0,Math.min(1,(gState.mouseY-topRange.y)/topRange.height));
+  // markerCtx.clearRect(0,0,markersCanvas.width, bottomConstraint-10);
+  // drawRangeControl(topRange, true);
 
   gState.targetRendererTranslate = newTranslate;
   smoothScroll(newTranslate);
@@ -925,9 +1036,22 @@ function handleMouseMove(e) {
     highlightEntry(entry);
     showEntryTooltip(entry); //, "Map of File reads (top is beginning of file, bottom is end, green are early reads, red are late)");
   } else if (x - canvas.width - fsmapCanvas.width < diskmapCanvas.width) {
-    let entry = getHoveredDiskmapEntry();
-    highlightEntry(entry);
-    showEntryTooltip(entry); //, "Map of File reads by physical location on disk (green are early reads, red are late)");
+    if (!isDownBottomSlider && !isDownTopSlider) {
+      let entry = getHoveredDiskmapEntry();
+      highlightEntry(entry);
+      showEntryTooltip(entry); //, "Map of File reads by physical location on disk (green are early reads, red are late)");
+    } else {
+      if (isDownTopSlider) {
+        topRange.pct=Math.max(0,Math.min(1,(gState.mouseY-topRange.y)/topRange.height));
+        markerCtx.clearRect(0,0,markersCanvas.width, bottomConstraint-10);
+        drawRangeControl(topRange, true);
+      } else if (isDownBottomSlider) {
+        bottomRange.pct=Math.max(0,Math.min(1,(gState.mouseY-bottomRange.y)/bottomRange.height));
+        markerCtx.clearRect(0,topConstraint+10,markersCanvas.width, markersCanvas.height);
+        drawRangeControl(bottomRange, false);
+      }
+      greyOutSelection(isDownTopSlider);
+    }
   } else {
     tooltip.style.display = "none";
   }
@@ -1075,6 +1199,56 @@ function drawPathInfo() {
   }
 }
 
+function makeRangeControl(x, y, width, height, isTop) {
+  var range={x:x, y:y, width:width, height:height};
+  range.x1 = range.x;
+  range.y1 = range.y + range.height;
+  if (isTop) {
+    range.pct=0;
+  } else {
+    range.pct=1;
+  }
+  return (range);
+}
+
+function drawRangeControl(range, isTop){
+  markerCtx.lineWidth=10;
+  markerCtx.beginPath();
+  var thumbY=range.y+range.height*range.pct;
+  if (isTop) {
+    markerCtx.moveTo(range.width,thumbY-5);
+    markerCtx.lineTo(range.width,thumbY+5);
+    topConstraint = thumbY;
+    markerCtx.lineTo(0, topConstraint);
+  } else {
+    markerCtx.moveTo(range.width,thumbY+5);
+    markerCtx.lineTo(range.width,thumbY-5);
+    bottomConstraint = thumbY;
+    markerCtx.lineTo(0, bottomConstraint);    
+  }
+  markerCtx.fill()
+}
+
+function greyOutSelection(isTopSlider) {
+  overlayCtx.lineWidth = canvas.width;
+  overlayCtx.globalAlpha = 0.2;
+  overlayCtx.beginPath();
+
+  if (isTopSlider) {
+    //clear the rectangle ABOVE the top constraint
+    overlayCtx.clearRect(0,0,overlayCanvas.width, bottomConstraint);
+    overlayCtx.moveTo(0,0);
+    overlayCtx.lineTo(0,topConstraint);
+  } else {
+    // clear the rectangle BELOW the bottom constraint
+    overlayCtx.clearRect(0,topConstraint,overlayCanvas.width, overlayCanvas.height);
+    overlayCtx.moveTo(0,overlayCanvas.height);
+    overlayCtx.lineTo(0,bottomConstraint);
+  }
+  overlayCtx.strokeStyle='grey';
+  overlayCtx.stroke();
+}
+
 function vcnRangeToLcnRanges(diskifyEntries, startVcn, vcnLength) {
   let curVcn = 0;
   let lcnRanges = [];
@@ -1179,6 +1353,12 @@ function drawDiskmap() {
   diskmapRenderer.translate(0, diskmapTranslate);
   diskmapRenderer.scale(diskmapCanvas.width, diskmapScale);
   diskmapRenderer.draw();
+}
+
+function reOffset() {
+  var BB = markersCanvas.getBoundingClientRect();
+  offsetX=BB.left;
+  offsetY=BB.top;
 }
 
 function getHoveredDiskmapEntry() {
@@ -1303,9 +1483,14 @@ function smoothValueChange(key, currentValue, target, acceleration, callback) {
 
 let drawForegroundTimeout = null;
 function doRedraw() {
+  // Clear the marker and overlay canvas before drawing
+  markerCtx.clearRect(0,0,markersCanvas.width, markersCanvas.height);
+  overlayCtx.clearRect(0,0,overlayCanvas.width, overlayCanvas.height);
+
   renderer.clearAll();
-  drawBackground();
-  drawForeground();
+  drawBackground(false);
+  drawRangeMarkers();
+  drawForeground(false);
   renderer.draw();
   drawForegroundTimeout = null;
 }
@@ -1420,6 +1605,11 @@ function handleMouseDown(event) {
         scheduleRedrawDiskmap();
         doRedraw();
       }
+    } else if (event.which == 1 || event.button == 0) {
+      var mx=parseInt(event.clientX-offsetX);
+      var my=parseInt(event.clientY-offsetY);
+      isDownTopSlider = (my <= topConstraint + 6 && my >= topConstraint-6);
+      isDownBottomSlider = (my <= bottomConstraint + 6 && my >= bottomConstraint-6);
     }
   }
 }
@@ -1429,9 +1619,62 @@ function handleMouseUp(event) {
     if (event.which == 2 || event.button == 4 ) {
       event.preventDefault();
       gState.middleMouseDownFor = null;
-    } else {
-
+    } else if (event.originalTarget.id == "redraw") {
+      event.preventDefault();
+      refocusArea();
+    } else if (event.originalTarget.id == "reset") {
+      event.preventDefault();
+      resetData();
+    } else if (event.originalTarget.id == "canvas-markers") {
+      event.preventDefault();
+      isDownTopSlider = false;
+      isDownBottomSlider = false;
     }
+  }
+}
+
+function handleMouseUpOut(event) {
+  event.preventDefault();
+  isDownTopSlider = false;
+  isDownBottomSlider = false;
+}
+
+/*
+  Focuses the canvas on the specified range.
+*/
+function refocusArea() {
+  if (gState) {
+    let firstProcessStart
+    if (isFirstAdjustment) {
+      firstProcessStart = data[0].start
+      isFirstAdjustment = false;
+    } else {
+      firstProcessStart = topTime;
+    }
+    topTime = (topConstraint/markersCanvas.height)*gState.totalTime + firstProcessStart;
+    bottomTime = (bottomConstraint/markersCanvas.height)*gState.totalTime + firstProcessStart;
+
+    focusedData = focusedData.filter(result =>
+      (result.start >= topTime && result.start <= bottomTime) || // Entire operation or upper part of operation is within range
+      (result.start <= topTime && result.start+result.duration >= bottomTime) || //extends past both ranges
+      (result.start+result.duration >= topTime && result.start+result.duration <= bottomTime) // bottom half of duration in range
+    );
+
+    if (focusedData) {
+      drawData(focusedData, focusedDiskifyData, true);
+    }
+  }
+}
+
+/*
+  Returns the data back to the original view.
+*/
+function resetData() {
+  if (gState) {
+    focusedData = data;
+    focusedDiskifyData = diskifyData;
+    isFirstAdjustment = true;
+    drawData(data, diskifyData, false);
   }
 }
 
@@ -1467,6 +1710,8 @@ document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
 colorBySelect.addEventListener("change", handleColorByChange);
+refocus.addEventListener("click", refocusArea());
+reset.addEventListener("click", resetData())
 
 renderer.startup();
 fsmapRenderer.startup();
