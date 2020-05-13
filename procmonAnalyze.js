@@ -468,6 +468,8 @@ function drawForeground() {
         matchesSearch = true;
       } else if (entry.detail && searchRegex.test(entry.detail)) {
         matchesSearch = true;
+      } else if (entry.stack && entry.stack.find(s => searchRegex.test(s.location))) {
+        matchesSearch = true;
       }
 
       entry.hiddenBySearch = !matchesSearch;

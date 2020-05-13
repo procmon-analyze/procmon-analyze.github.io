@@ -2,7 +2,7 @@ export function extractProfileMarkers(obj, processStartTime) {
   let result = [];
   let tracingMarkers = {};
 
-  for (let thread of obj.threads) {
+  for (let thread of obj.threads || []) {
     // Loop through all the threads we have profiler info on
     for (let i = 0; i < thread.markers.length; i++) {
       let markers = thread.markers;
@@ -60,7 +60,7 @@ export function extractProfileMarkers(obj, processStartTime) {
           path,
           pid: thread.pid,
           tid: thread.tid,
-          detail: name,
+          detail: name + " " + JSON.stringify(data, null, 2),
           processName: "firefox.exe",
           start: profileTime + processStartTime,
           duration: duration
