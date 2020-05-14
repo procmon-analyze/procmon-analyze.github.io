@@ -215,6 +215,21 @@ function Renderer(canvas) {
     }
   }
 
+  function clearGrey(isTopSlider) {
+    generationId++;
+    for (let [cssColor, rectsObj] of Object.entries(rectsByColor)) {
+      if (cssColor == '#d6d5d2' && isTopSlider) {
+        rectsObj.vertexCount = 0;
+        rectsObj.hasAlpha = false;
+        rectsObj.isDirty = true; 
+      } else if (cssColor == '#d6d5d1' && !isTopSlider) {
+        rectsObj.vertexCount = 0;
+        rectsObj.hasAlpha = false;
+        rectsObj.isDirty = true; 
+      }
+    }
+  }
+
   function scale(scaleX, scaleY) {
     worldScale = [scaleX, scaleY];
   }
@@ -332,6 +347,7 @@ function Renderer(canvas) {
     scale,
     translate,
     clearAll,
+    clearGrey,
   };
 }
 

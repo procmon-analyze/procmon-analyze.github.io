@@ -34,11 +34,6 @@ body {
   float: left;
 }
 
-#canvas-overlay {
-  float: left;
-  position: absolute;
-}
-
 #canvas-markers {
   float: left;
 }
