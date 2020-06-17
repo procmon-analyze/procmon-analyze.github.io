@@ -15,6 +15,9 @@ const HOVERED_ENTRY_FILL = 0.9;
 const FILTERED_OUT_ENTRY_FILL = 0.7;
 const MAX_DETAIL_LINES = 24;
 const ASSUMED_CLUSTER_SIZE = 4096;
+const TIMELINE_SELECTION_OVERLAY_DEPTH = 0.8;
+const TIMELINE_UNSELECTED_GREY_TOP = `#d6d5d2`;
+const TIMELINE_UNSELECTED_GREY_BOTTOM = `#d6d5d1`;
 
 const csvInput = document.getElementById("csvfile");
 const diskifyInput = document.getElementById("diskifyfile");
@@ -22,9 +25,24 @@ const profilerInput = document.getElementById("profilerfile");
 const tooltip = document.getElementById("tooltip");
 const searchbar = document.getElementById("searchbar-input");
 const colorBySelect = document.getElementById("color-by-select");
+const refocus = document.getElementById("redraw")
+const reset = document.getElementById("reset");
 const timeline = document.getElementById("timeline");
 const canvas = document.getElementById("canvas");
 const fsmapCanvas = document.getElementById("fsmap-canvas");
+const markersCanvas = document.getElementById("canvas-markers");
+var data, diskifyData; // Contains the entire array of data from input file
+
+var offsetX, offsetY;
+reOffset();
+window.onscroll=function(e){ reOffset(); }
+window.onresize=function(e){ reOffset(); }
+var isDownTopSlider = false;
+var isDownBottomSlider = false;
+var topRange, bottomRange;
+
+var markerCtx;
+
 const diskmapCanvas = document.getElementById("diskmap-canvas");
 const readInfo = document.getElementById("read-info");
 const tools = document.getElementById("tools");
@@ -41,6 +59,9 @@ fsmapCanvas.height = window.innerHeight - 16;
 
 diskmapCanvas.width = window.innerWidth * 0.025;
 diskmapCanvas.height = window.innerHeight - 16;
+
+markersCanvas.width = window.innerWidth * 0.01;
+markersCanvas.height = window.innerHeight - 16;
 
 const VIEWPORT_BUFFER = canvas.height;
 
@@ -87,6 +108,7 @@ const COLOR_BY_TID = 3;
 let colorBy = getColorByKey();
 
 let gState = null;
+let gOuterState = null;
 
 function colorArrayToHex(colorArray) {
   function denormalizeAndStringify(c) {
@@ -184,7 +206,7 @@ function parseReadDetail(detail) {
   }
 }
 
-async function drawData(data, diskify) {
+async function drawData(aData, diskify, isRefocused) {
   document.getElementById("chooserWrapper").style.display = "none";
   tools.style.display = "block";
 
@@ -195,7 +217,7 @@ async function drawData(data, diskify) {
   let totalTimeByOperation = {};
   let readsByPath = {};
 
-  for (let row of data) {
+  for (let row of aData) {
     let {
       operation,
       path,
@@ -214,7 +236,7 @@ async function drawData(data, diskify) {
     if (start < minTime) {
       if (minTime != Number.MAX_VALUE) {
         throw new Error("Data should be ordered by start time.");
-      }
+      } 
       minTime = start;
     }
     if (end > maxTime) {
@@ -334,45 +356,69 @@ async function drawData(data, diskify) {
   let totalTime = maxTime - minTime;
   let trackWidth = canvas.width / tracks.length;
   let rendererScale = canvas.height / totalTime;
+
+  if (!isRefocused) {
+    gOuterState = {
+      minTime,
+      maxTime,
+      totalTime,
+      unconstrainedData: aData,
+      unconstrainedDiskifyData: aData,
+    };
+  }
+
   gState = {
-    minTime,
-    maxTime,
-    tracks,
-    totalTime,
-    trackWidth,
-    rendererScale,
-    targetRendererScale: rendererScale,
-    diskmapScale,
-    targetDiskmapScale: diskmapScale,
-    readsByPath,
-    diskify,
-    maxLcn,
-    diskmapTranslate: 0,
-    targetDiskmapTranslate: 0,
-    rendererTranslate: 0,
-    targetRendererTranslate: 0,
-    mouseX: 0,
-    mouseY: 0,
-    timelineIndicators: [],
-    lcnReads: [],
-    lastHoveredRect: null,
-    selectedEntry: null,
-    activePath: null,
+      minTime,
+      maxTime,
+      tracks,
+      totalTime,
+      trackWidth,
+      rendererScale,
+      targetRendererScale: rendererScale,
+      diskmapScale,
+      targetDiskmapScale: diskmapScale,
+      readsByPath,
+      diskify,
+      maxLcn,
+      diskmapTranslate: 0,
+      targetDiskmapTranslate: 0,
+      rendererTranslate: 0,
+      targetRendererTranslate: 0,
+      mouseX: 0,
+      mouseY: 0,
+      timelineIndicators: [],
+      lcnReads: [],
+      lastHoveredRect: null,
+      selectedEntry: null,
+      activePath: null,
+      topMarkerCoordinate: 0,
+      bottomMarkerCoordinate: markersCanvas.height,
+      isRefocused: isRefocused,
+      minTimeRelative: absTimeToRelTime(minTime),
+      maxTimeRelative: absTimeToRelTime(maxTime),
   };
+
+  gOuterState.constrainedTimeBegin = minTime;
+  gOuterState.constrainedTimeEnd = maxTime;
+  gOuterState.constrainedTotalTime = totalTime;
 
   renderer.scale(trackWidth, rendererScale);
   renderer.translate(0, 0);
 
   renderer.clearAll();
-  drawBackground();
-  drawForeground();
+  drawBackground(isRefocused);
+  drawForeground(isRefocused);
+  drawRangeMarkers();
   renderer.draw();
 
   drawTopPathsInfo();
   scheduleRedrawDiskmap();
 }
 
-function drawBackground() {
+
+
+
+function drawBackground(isRefocused, isZoom) {
   let {
     trackWidth,
     minTime,
@@ -380,7 +426,9 @@ function drawBackground() {
     tracks,
     totalTime,
     rendererTranslate,
-    rendererScale
+    rendererScale,
+    minTimeRelative,
+    maxTimeRelative,
   } = gState;
 
   let timelineScale =
@@ -388,11 +436,22 @@ function drawBackground() {
     rendererScale < 10000 ? 0.1 :
     rendererScale < 100000 ? 0.01 : 0.001;
 
+
+  // When refocused, the upper bound may render it so that only a portion of 
+  // the top rects should be shown. To account for that, we need to start 
+  // at a height below 0.
+  let initialHeight;
+  if (isRefocused) {
+    initialHeight = minTimeRelative - Math.floor(minTimeRelative);
+  } else {
+    initialHeight = 0;
+  }
+
   for (let i = 0; i < Math.ceil(totalTime / timelineScale); i++) {
     let color = (i & 1) ? "#ffffff" : "#efefef";
     renderer.pushRect(color,
                       0,
-                      timelineScale * i,
+                      timelineScale * i - initialHeight,
                       tracks.length,
                       timelineScale,
                       BACKGROUND_DEPTH - 0.05);
@@ -413,23 +472,64 @@ function drawBackground() {
 
   gState.timelineIndicators = [];
   timeline.textContent = "";
-  let printSeconds = timelineScale == 1;
-  for (let i = 0; i < Math.floor(totalTime / timelineScale); i++) {
-    let offset = i * timelineScale;
+  let offset;
+  for (let i = 0; i < Math.ceil(totalTime / timelineScale); i++) {
+    offset = i * timelineScale - initialHeight;
     let offsetPx = (offset + rendererTranslate) * rendererScale;
-    if (offsetPx < -VIEWPORT_BUFFER || offsetPx > canvas.height + VIEWPORT_BUFFER) {
-      continue;
-    }
 
     let div = document.createElement("div");
     div.style.position = "fixed";
-    div.style.left = `${canvas.width - 64}px`;
+    div.style.left = `${canvas.width - 40}px`;
     div.style.top = `${offsetPx}px`;
-    div.textContent = timelineScale == 1 ? `${i}s` : `${Math.round(i * timelineScale * 1000)}ms`;
+    div.textContent = timelineScale == 1 ? `${i + Math.floor(minTimeRelative)}s` : `${Math.round((i + Math.ceil(minTimeRelative)) * timelineScale * 1000)}ms`;
 
     timeline.appendChild(div);
     gState.timelineIndicators.push({div, offset});
   }
+
+  // Add the values of the range markers
+  if (isRefocused) {
+    let upperRangeDiv = document.createElement("div");
+    let offsetUpperPx = (rendererTranslate) * rendererScale;
+    upperRangeDiv.style.position = "fixed";
+    upperRangeDiv.style.left = `${canvas.width - 80}px`;
+    upperRangeDiv.style.top = `${offsetUpperPx}px`;
+    upperRangeDiv.textContent = timelineScale == 1 ? `${minTimeRelative.toFixed(2)}s` : `${(minTimeRelative * timelineScale * 1000).toFixed(2)}ms`;
+    timeline.appendChild(upperRangeDiv);
+    gState.timelineIndicators.push({upperRangeDiv, offset:0});
+
+    let lowerRangeDiv = document.createElement("div");
+    let offsetLowerPx = (offset + rendererTranslate) * rendererScale;
+    lowerRangeDiv.style.position = "fixed";
+    lowerRangeDiv.style.left = `${canvas.width - 80}px`;
+    lowerRangeDiv.style.top = `${canvas.height}px`;
+    lowerRangeDiv.textContent = timelineScale == 1 ? `${maxTimeRelative.toFixed(2)}s` : `${(maxTimeRelative * timelineScale * 1000).toFixed(2)}ms`;
+    timeline.appendChild(lowerRangeDiv);
+    gState.timelineIndicators.push({lowerRangeDiv, offset});    
+  }
+}
+
+
+function drawRangeMarkers() {
+  if (markerCtx) {
+    markerCtx.clearRect(0,0,markersCanvas.width, markersCanvas.height);
+  } else {
+    markerCtx = markersCanvas.getContext('2d');
+  }
+
+  var cw = markersCanvas.width;
+  var ch = markersCanvas.height;
+  reOffset();
+  topRange = makeRangeControl(0,0,cw,ch, true);
+  bottomRange = makeRangeControl(0,0,cw,ch, false)
+  drawRangeControl(topRange, true);
+  drawRangeControl(bottomRange, false);
+
+
+  markerCtx.onmousedown=(function(e){handleMouseDown(e);});
+  markerCtx.onmousemove=(function(e){handleMouseMove(e);});
+  markerCtx.onmouseup=(function(e){handleMouseUpOut(e);});
+  markerCtx.onmouseout=(function(e){handleMouseUpOut(e);});
 }
 
 // From MDN (https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions)
@@ -437,9 +537,8 @@ function escapeRegExp(string) {
   return string.replace(/[.*+\-?^${}()|[\]\\]/g, '\\$&');
 }
 
-function drawForeground() {
+function drawForeground(isRefocused) {
   let {
-    trackWidth,
     minTime,
     maxTime,
     tracks,
@@ -448,6 +547,10 @@ function drawForeground() {
     rendererTranslate,
     selectedEntry,
   } = gState;
+
+  let {
+    constrainedTimeBegin
+  } = gOuterState;
 
   let searchText = selectedEntry ? selectedEntry.path : searchbar.value;
   let searchRegex = new RegExp(escapeRegExp(searchText), "i");
@@ -474,17 +577,26 @@ function drawForeground() {
 
       entry.hiddenBySearch = !matchesSearch;
 
-      let startRelative = entry.start - minTime;
-      let endRelative = entry.end - minTime;
-      let startPixels = (startRelative + rendererTranslate) * rendererScale;
-      let endPixels = (endRelative + rendererTranslate) * rendererScale;
+      let startRelative = absTimeToRelTime(entry.start);
+      let endRelative = absTimeToRelTime(entry.end);
+
+      let constrainedRelative, startPixels, endPixels;
+      if (isRefocused) {
+        constrainedRelative = absTimeToRelTime(constrainedTimeBegin);
+        startPixels = relTimeToScreenSpace(startRelative) - relTimeToScreenSpace(constrainedRelative);
+        endPixels = relTimeToScreenSpace(endRelative) - relTimeToScreenSpace(constrainedRelative);
+      } else {
+        startPixels = relTimeToScreenSpace(startRelative);
+        endPixels = relTimeToScreenSpace(endRelative);
+        constrainedRelative = 0;
+      }
 
       if (endPixels < -VIEWPORT_BUFFER || startPixels > canvas.height + VIEWPORT_BUFFER) {
         continue;
       }
 
       entry.rectHandle = renderer.pushRect(getColor(entry),
-                                           i, startRelative,
+                                           i, startRelative - constrainedRelative,
                                            1, endRelative - startRelative,
                                            FOREGROUND_DEPTH,
                                            matchesSearch ? 1.0 : FILTERED_OUT_ENTRY_FILL);
@@ -498,14 +610,12 @@ async function readFileContents() {
     let reader = new FileReader();
     let text = await getFileText(reader, file);
 
-    let diskifyData = null;
+    diskifyData = null;
     if (diskifyInput.files[0]) {
       let diskifyText = await getFileText(reader, diskifyInput.files[0]);
 
       diskifyData = parseDiskify(diskifyText);
     }
-
-    let data;
 
     let filename = file.name.toLowerCase();
     if (filename.endsWith(".csv")) {
@@ -540,7 +650,7 @@ async function readFileContents() {
       return {
         operation, path, pid, tid, start, duration, detail, processName, stack,
       };
-    }).filter(row => row.duration > 0 || row.operation == "Process Start");
+    }).filter(row => (row.duration > 0 || row.operation == "Process Start") && row.processName == "firefox.exe");
 
     let profilerData = null;
     if (profilerInput.files[0]) {
@@ -562,7 +672,7 @@ async function readFileContents() {
 
     data.sort((lhs, rhs) => lhs.start - rhs.start);
 
-    await drawData(data, diskifyData);
+    await drawData(data, diskifyData, false);
   }
 };
 
@@ -637,7 +747,12 @@ function doScroll(dy) {
     rendererTranslate,
     targetRendererTranslate,
     mouseY,
+    isRefocused,
   } = gState;
+
+  if (isRefocused) {
+    return;
+  }
 
   let totalTime = maxTime - minTime;
   let windowHeightInSeconds = canvas.height / rendererScale;
@@ -682,8 +797,14 @@ function doZoom(scaleFactor) {
     maxTime,
     targetRendererScale,
     rendererTranslate,
-    mouseY
+    mouseY,
+    isRefocused,
   } = gState;
+
+
+  if (isRefocused) {
+    return;
+  }
 
   let windowTopInPixels = -rendererTranslate * targetRendererScale;
   let mousePositionAbsolute = windowTopInPixels + mouseY;
@@ -917,19 +1038,46 @@ function handleMouseMove(e) {
     } else if (isForDiskmap) {
       doDiskmapScroll(-dy);
     }
+    isDownTopSlider = false;
+    isDownBottomSlider = false;
   } else if (x < canvas.width) {
     let entry = getHoveredEntry();
     showEntryTooltip(entry, {x, y});
+    isDownTopSlider = false;
+    isDownBottomSlider = false;
   } else if (x - canvas.width < fsmapCanvas.width && gState.selectedEntry) {
     let entry = getHoveredReadEntry();
     highlightEntry(entry);
     showEntryTooltip(entry); //, "Map of File reads (top is beginning of file, bottom is end, green are early reads, red are late)");
+    isDownTopSlider = false;
+    isDownBottomSlider = false;
   } else if (x - canvas.width - fsmapCanvas.width < diskmapCanvas.width) {
-    let entry = getHoveredDiskmapEntry();
-    highlightEntry(entry);
-    showEntryTooltip(entry); //, "Map of File reads by physical location on disk (green are early reads, red are late)");
+    if (!isDownBottomSlider && !isDownTopSlider) {
+      let entry = getHoveredDiskmapEntry();
+      highlightEntry(entry);
+      showEntryTooltip(entry); //, "Map of File reads by physical location on disk (green are early reads, red are late)");
+    } else {
+      if (isDownTopSlider) {
+        gOuterState.constrainedTimeBegin = screenSpaceToAbsTime(gState.mouseY + absTimeToScreenSpace(gState.minTime), true);
+
+        topRange.pct=Math.max(0,Math.min(1,(gState.mouseY-topRange.y)/topRange.height));
+        markerCtx.clearRect(0,0,markersCanvas.width, gOuterState.bottomMarkerCoordinate-10);
+
+        drawRangeControl(topRange, true);
+      } else if (isDownBottomSlider) {
+        gOuterState.constrainedTimeEnd = screenSpaceToAbsTime(gState.mouseY + absTimeToScreenSpace(gState.minTime), false);
+
+        bottomRange.pct=Math.max(0,Math.min(1,(gState.mouseY-bottomRange.y)/bottomRange.height));
+        markerCtx.clearRect(0,gOuterState.topMarkerCoordinate+10,markersCanvas.width, markersCanvas.height);
+
+        drawRangeControl(bottomRange, false);
+      }
+      greyOutSelection(isDownTopSlider);
+    }
   } else {
     tooltip.style.display = "none";
+    isDownTopSlider = false;
+    isDownBottomSlider = false;
   }
 }
 
@@ -1075,6 +1223,68 @@ function drawPathInfo() {
   }
 }
 
+function makeRangeControl(x, y, width, height, isTop) {
+  var range={x:x, y:y, width:width, height:height};
+  range.x1 = range.x;
+  range.y1 = range.y + range.height;
+  if (isTop) {
+    range.pct=0;
+  } else {
+    range.pct=1;
+  }
+  return (range);
+}
+
+function drawRangeControl(range, isTop){
+  markerCtx.lineWidth=10;
+  markerCtx.beginPath();
+  let thumbY=range.y+range.height*range.pct;
+  if (isTop) {
+    markerCtx.moveTo(range.width,thumbY-5);
+    markerCtx.lineTo(range.width,thumbY+5);
+    gOuterState.topMarkerCoordinate = thumbY;
+    markerCtx.lineTo(0, gOuterState.topMarkerCoordinate);    
+  } else {
+    markerCtx.moveTo(range.width,thumbY+5);
+    markerCtx.lineTo(range.width,thumbY-5);
+    gOuterState.bottomMarkerCoordinate = thumbY;
+    markerCtx.lineTo(0, gOuterState.bottomMarkerCoordinate);    
+  }
+  markerCtx.fill()
+}
+
+function greyOutSelection(isTopSlider) {
+  let {
+    minTime,
+    maxTime,
+    tracks,
+    totalTime,
+  } = gState;
+  let {
+    constrainedTimeBegin,
+    constrainedTimeEnd,
+  } = gOuterState;
+
+  renderer.clearGrey(isTopSlider);
+
+  let unselectedRectangle; 
+  if (isTopSlider) {
+    unselectedRectangle = renderer.pushRect(TIMELINE_UNSELECTED_GREY_TOP, 
+                      0, 0,
+                      tracks.length, absTimeToRelTime(constrainedTimeBegin) - absTimeToRelTime(minTime),
+                      TIMELINE_SELECTION_OVERLAY_DEPTH,
+                      1, true);
+  } else {
+    unselectedRectangle = renderer.pushRect(TIMELINE_UNSELECTED_GREY_BOTTOM, 
+                  0, absTimeToRelTime(constrainedTimeEnd) - absTimeToRelTime(minTime),
+                  tracks.length, canvas.height,
+                  TIMELINE_SELECTION_OVERLAY_DEPTH,
+                  1);
+  }
+  renderer.maybeMutateRect(unselectedRectangle, 1);
+  renderer.draw();
+}
+
 function vcnRangeToLcnRanges(diskifyEntries, startVcn, vcnLength) {
   let curVcn = 0;
   let lcnRanges = [];
@@ -1179,6 +1389,12 @@ function drawDiskmap() {
   diskmapRenderer.translate(0, diskmapTranslate);
   diskmapRenderer.scale(diskmapCanvas.width, diskmapScale);
   diskmapRenderer.draw();
+}
+
+function reOffset() {
+  var BB = markersCanvas.getBoundingClientRect();
+  offsetX=BB.left;
+  offsetY=BB.top;
 }
 
 function getHoveredDiskmapEntry() {
@@ -1303,12 +1519,17 @@ function smoothValueChange(key, currentValue, target, acceleration, callback) {
 
 let drawForegroundTimeout = null;
 function doRedraw() {
+  markerCtx.clearRect(0,0,markersCanvas.width, markersCanvas.height);
+
+  let { isRefocused } = gState
+
   renderer.clearAll();
-  drawBackground();
-  drawForeground();
+  drawBackground(isRefocused);
+  drawForeground(isRefocused);
   renderer.draw();
   drawForegroundTimeout = null;
 }
+
 
 function scheduleRedraw() {
   if (drawForegroundTimeout) {
@@ -1420,6 +1641,11 @@ function handleMouseDown(event) {
         scheduleRedrawDiskmap();
         doRedraw();
       }
+    } else if (event.which == 1 || event.button == 0) {
+      var mx=parseInt(event.clientX-offsetX);
+      var my=parseInt(event.clientY-offsetY);
+      isDownTopSlider = (my <= gOuterState.topMarkerCoordinate + 6 && my >= gOuterState.topMarkerCoordinate-6);
+      isDownBottomSlider = (my <= gOuterState.bottomMarkerCoordinate + 6 && my >= gOuterState.bottomMarkerCoordinate-6);
     }
   }
 }
@@ -1429,10 +1655,76 @@ function handleMouseUp(event) {
     if (event.which == 2 || event.button == 4 ) {
       event.preventDefault();
       gState.middleMouseDownFor = null;
-    } else {
-
+    } else if (event.explicitOriginalTarget.id == "redraw") {
+      event.preventDefault();
+      refocusArea();
+    } else if (event.explicitOriginalTarget.id == "reset") {
+      event.preventDefault();
+      resetData();
+    } else if (event.explicitOriginalTarget.id == "canvas-markers") {
+      event.preventDefault();
+      isDownTopSlider = false;
+      isDownBottomSlider = false;
     }
   }
+}
+
+function handleMouseUpOut(event) {
+  event.preventDefault();
+  isDownTopSlider = false;
+  isDownBottomSlider = false;
+}
+
+/*
+  Focuses the canvas on the specified range.
+*/
+function refocusArea() {
+  if (gState) {
+    let constrainedData = gOuterState.unconstrainedData.filter(row => 
+      row.start > gOuterState.constrainedTimeBegin && row.start + row.duration < gOuterState.constrainedTimeEnd);
+    // TODO: constrain diskify data
+    if (constrainedData) {
+      //TO DO: this should have diskify data
+      drawData(constrainedData, null, true);
+    }
+  }
+}
+
+/*
+  Returns the data back to the original view.
+*/
+function resetData() {
+  if (gState) {
+    drawData(data, diskifyData, false);
+  }
+}
+
+function absTimeToRelTime(absTime) {
+  let { minTime } = gOuterState;
+  return absTime - minTime;
+}
+
+function relTimeToAbsTime(relTime) {
+  let { minTime } = gOuterState;
+  return relTime + minTime;
+}
+
+function relTimeToScreenSpace(relTime) {
+  let { rendererScale, rendererTranslate } = gState;
+  return (relTime + rendererTranslate) * rendererScale;
+}
+
+function absTimeToScreenSpace(absTime) {
+  return relTimeToScreenSpace(absTimeToRelTime(absTime));
+}
+
+function screenSpaceToRelTime(screenY) {
+  let { rendererScale, rendererTranslate } = gState;
+  return screenY / rendererScale - rendererTranslate;
+}
+
+function screenSpaceToAbsTime(screenY, isTopSlider) {
+  return relTimeToAbsTime(screenSpaceToRelTime(screenY,isTopSlider));
 }
 
 function handleSearchChange(event) {
@@ -1467,6 +1759,8 @@ document.addEventListener("mousedown", handleMouseDown);
 document.addEventListener("mouseup", handleMouseUp);
 searchbar.addEventListener("keydown", handleSearchChange);
 colorBySelect.addEventListener("change", handleColorByChange);
+refocus.addEventListener("click", refocusArea());
+reset.addEventListener("click", resetData())
 
 renderer.startup();
 fsmapRenderer.startup();
